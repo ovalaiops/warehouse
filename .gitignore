@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+build/
+*.exe
+*.out
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Go
+/backend/api/tmp/
+
+# Models (too large for git)
+*.bin
+*.safetensors
+*.gguf
+
+# Logs
+*.log
+
+# Expo
+frontendmobile/.expo/
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate*

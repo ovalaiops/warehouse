@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS shopping_lists;
+DROP TABLE IF EXISTS product_scans;
+DROP TABLE IF EXISTS product_prices;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS shift_reports;
+DROP TABLE IF EXISTS vehicle_trajectories;
+DROP TABLE IF EXISTS fleet_vehicles;
+DROP TABLE IF EXISTS inventory_snapshots;
+DROP TABLE IF EXISTS rack_positions;
+DROP TABLE IF EXISTS alerts;
+DROP TABLE IF EXISTS cameras;
+DROP TABLE IF EXISTS zones;
+DROP TABLE IF EXISTS warehouses;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS organizations;
