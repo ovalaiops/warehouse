@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Warehouse Intel",
+    "slug": "warehouse-intel",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#08070e"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.warehouseintel.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera is used to scan and identify products"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#08070e"
+      },
+      "package": "com.warehouseintel.app",
+      "permissions": ["CAMERA"]
+    },
+    "plugins": [
+      ["expo-camera", { "cameraPermission": "Allow Warehouse Intel to use your camera for product scanning" }],
+      "expo-barcode-scanner"
+    ]
+  }
+}
