@@ -9,5 +9,6 @@ decord==0.6.0
 celery==5.4.0
 redis==5.2.1
 pydantic==2.10.4
+pydantic-settings==2.7.1
 python-multipart==0.0.20
 httpx==0.28.1

@@ -1,0 +1,354 @@
+openapi: 3.0.3
+info:
+  title: Warehouse Intelligence Platform API
+  description: API for warehouse operations intelligence and consumer product scanning
+  version: 0.1.0
+  contact:
+    name: Warehouse Intel Team
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development
+  - url: https://warehouse-api-xxxxx.run.app/api/v1
+    description: Production (Cloud Run)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /warehouses:
+    get:
+      tags: [Warehouses]
+      summary: List warehouses for current org
+      responses:
+        "200":
+          description: List of warehouses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Warehouse"
+    post:
+      tags: [Warehouses]
+      summary: Create a warehouse
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWarehouse"
+      responses:
+        "201":
+          description: Created warehouse
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Warehouse"
+
+  /warehouses/{warehouseId}/alerts:
+    get:
+      tags: [Alerts]
+      summary: List alerts for warehouse
+      parameters:
+        - name: warehouseId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [safety, inventory, congestion, security, quality]
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [critical, warning, info]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [new, acknowledged, resolved, dismissed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: List of alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Alert"
+                  meta:
+                    $ref: "#/components/schemas/PaginationMeta"
+
+  /alerts/{alertId}/acknowledge:
+    put:
+      tags: [Alerts]
+      summary: Acknowledge an alert
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Alert acknowledged
+
+  /products/scan:
+    post:
+      tags: [Consumer]
+      summary: Scan product image for recognition
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Product image
+              required:
+                - file
+      responses:
+        "200":
+          description: Product scan result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductScanResult"
+
+  /ws/alerts/{warehouseId}:
+    get:
+      tags: [WebSocket]
+      summary: Real-time alert stream
+      description: |
+        WebSocket endpoint for receiving real-time alerts.
+        Events: alert.created, alert.updated
+      parameters:
+        - name: warehouseId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Firebase Auth JWT token
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, manager, viewer, consumer]
+        orgId:
+          type: string
+          format: uuid
+
+    Warehouse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        address:
+          type: string
+        dimensions:
+          type: object
+          properties:
+            width:
+              type: number
+            height:
+              type: number
+            unit:
+              type: string
+
+    CreateWarehouse:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        dimensions:
+          type: object
+
+    Alert:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        warehouseId:
+          type: string
+          format: uuid
+        cameraId:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [safety, inventory, congestion, security, quality]
+        subtype:
+          type: string
+        severity:
+          type: string
+          enum: [critical, warning, info]
+        status:
+          type: string
+          enum: [new, acknowledged, resolved, dismissed]
+        title:
+          type: string
+        description:
+          type: string
+        reasoning:
+          type: string
+          description: Chain-of-thought reasoning from Cosmos Reason 2
+        detections:
+          type: array
+          items:
+            $ref: "#/components/schemas/Detection"
+        videoClipUrl:
+          type: string
+        detectedAt:
+          type: string
+          format: date-time
+
+    Detection:
+      type: object
+      properties:
+        label:
+          type: string
+        bbox:
+          type: array
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+          description: "[x1, y1, x2, y2] normalized coordinates"
+        confidence:
+          type: number
+        timestamp:
+          type: string
+          description: "mm:ss format"
+
+    ProductScanResult:
+      type: object
+      properties:
+        product:
+          $ref: "#/components/schemas/Product"
+        prices:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductPrice"
+        confidence:
+          type: number
+        reasoning:
+          type: string
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        brand:
+          type: string
+        category:
+          type: string
+        ingredients:
+          type: array
+          items:
+            type: object
+        nutrition:
+          type: object
+        allergens:
+          type: array
+          items:
+            type: string
+
+    ProductPrice:
+      type: object
+      properties:
+        retailer:
+          type: string
+        price:
+          type: number
+        currency:
+          type: string
+        unitPrice:
+          type: number
+        unit:
+          type: string
+
+    PaginationMeta:
+      type: object
+      properties:
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    WSEvent:
+      type: object
+      properties:
+        eventType:
+          type: string
+          enum: [alert.created, alert.updated, fleet.position, fleet.near_miss]
+        payload:
+          type: object
+        timestamp:
+          type: string
+          format: date-time

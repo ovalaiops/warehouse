@@ -1,0 +1,35 @@
+name: Deploy Frontend Web
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontendweb/**"
+
+jobs:
+  deploy:
+    name: Deploy to Netlify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontendweb
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_API_URL: ${{ secrets.API_URL }}
+          VITE_WS_URL: ${{ secrets.WS_URL }}
+          VITE_FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+      - uses: nwtgck/actions-netlify@v3
+        with:
+          publish-dir: frontendweb/dist
+          production-deploy: true
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
