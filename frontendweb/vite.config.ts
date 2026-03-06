@@ -13,8 +13,24 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://localhost:8080",
+        target: "https://warehouse-api-m5p6hcoypa-uc.a.run.app",
         changeOrigin: true,
+        secure: true,
+      },
+      "/admin": {
+        target: "https://warehouse-api-m5p6hcoypa-uc.a.run.app",
+        changeOrigin: true,
+        secure: true,
+      },
+      "/infer": {
+        target: "https://warehouse-inference-m5p6hcoypa-uc.a.run.app",
+        changeOrigin: true,
+        secure: true,
+      },
+      "/models": {
+        target: "https://warehouse-inference-m5p6hcoypa-uc.a.run.app",
+        changeOrigin: true,
+        secure: true,
       },
     },
   },

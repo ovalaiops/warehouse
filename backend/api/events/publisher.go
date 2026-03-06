@@ -29,12 +29,20 @@ type Event struct {
 // Handler is a function that processes an event.
 type Handler func(Event)
 
+// MetricsRecorder is an interface for recording event metrics,
+// avoiding a circular dependency on the telemetry package.
+type MetricsRecorder interface {
+	RecordEvent(eventType string)
+	RecordEventDropped()
+}
+
 // Publisher manages in-memory event publishing and subscribing.
 type Publisher struct {
 	mu          sync.RWMutex
 	subscribers map[EventType][]Handler
 	eventCh     chan Event
 	done        chan struct{}
+	metrics     MetricsRecorder
 }
 
 // NewPublisher creates a new event publisher.
@@ -63,8 +71,14 @@ func (p *Publisher) Publish(eventType EventType, payload interface{}) error {
 
 	select {
 	case p.eventCh <- event:
+		if p.metrics != nil {
+			p.metrics.RecordEvent(string(eventType))
+		}
 	default:
 		slog.Warn("event channel full, dropping event", "type", eventType)
+		if p.metrics != nil {
+			p.metrics.RecordEventDropped()
+		}
 	}
 	return nil
 }
@@ -111,6 +125,11 @@ func (p *Publisher) Subscribe(eventType EventType, handler Handler) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.subscribers[eventType] = append(p.subscribers[eventType], handler)
+}
+
+// SetCollector sets the metrics recorder for event tracking.
+func (p *Publisher) SetCollector(c MetricsRecorder) {
+	p.metrics = c
 }
 
 // Close shuts down the publisher.

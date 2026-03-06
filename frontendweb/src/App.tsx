@@ -12,6 +12,8 @@ import Fleet from "@/pages/Fleet";
 import Analytics from "@/pages/Analytics";
 import Reports from "@/pages/Reports";
 import Settings from "@/pages/Settings";
+import Admin from "@/pages/Admin";
+import CosmosAI from "@/pages/CosmosAI";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -97,6 +99,22 @@ function App() {
             element={
               <ProtectedRoute>
                 <Reports />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/cosmos"
+            element={
+              <ProtectedRoute>
+                <CosmosAI />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute>
+                <Admin />
               </ProtectedRoute>
             }
           />

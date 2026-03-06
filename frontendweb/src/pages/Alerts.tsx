@@ -1,10 +1,61 @@
 import React, { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { formatTimestamp } from "@/lib/utils";
 import { Badge } from "@/components/common/Badge";
 import { AlertDetail } from "@/components/alerts/AlertDetail";
 import { Search, Filter, X } from "lucide-react";
+import { api } from "@/services/api";
 import type { Alert, AlertSeverity, AlertType, AlertStatus } from "@/types";
+
+const DEFAULT_WAREHOUSE_ID = "33333333-3333-3333-3333-333333333301";
+
+interface ApiAlert {
+  id: string;
+  warehouse_id: string;
+  camera_id?: string;
+  zone_id?: string;
+  type: AlertType;
+  subtype: string;
+  severity: AlertSeverity;
+  status: AlertStatus;
+  title: string;
+  description?: string;
+  reasoning?: string;
+  detections?: Array<{ label: string; bbox?: [number, number, number, number]; confidence?: number }>;
+  metadata: Record<string, unknown>;
+  detected_at: string;
+  acknowledged_at?: string;
+  resolved_at?: string;
+  created_at: string;
+}
+
+interface AlertsApiResponse {
+  alerts: ApiAlert[];
+  total: number;
+}
+
+function mapApiAlert(a: ApiAlert): Alert {
+  return {
+    id: a.id,
+    warehouseId: a.warehouse_id,
+    cameraId: a.camera_id,
+    zoneId: a.zone_id,
+    type: a.type,
+    subtype: a.subtype,
+    severity: a.severity,
+    status: a.status,
+    title: a.title,
+    description: a.description,
+    reasoning: a.reasoning,
+    detections: a.detections,
+    metadata: a.metadata,
+    detectedAt: a.detected_at,
+    acknowledgedAt: a.acknowledged_at,
+    resolvedAt: a.resolved_at,
+    createdAt: a.created_at,
+  };
+}
 
 const severityVariant: Record<AlertSeverity, "critical" | "warning" | "info"> = {
   critical: "critical",
@@ -98,7 +149,54 @@ const Alerts: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState<AlertStatus | "all">("all");
   const [searchQuery, setSearchQuery] = useState("");
 
-  const filteredAlerts = mockAlerts.filter((a) => {
+  const queryClient = useQueryClient();
+
+  const { data: alertsData } = useQuery({
+    queryKey: ["alerts", DEFAULT_WAREHOUSE_ID],
+    queryFn: async () => {
+      const res = await api.get<AlertsApiResponse>(
+        `/warehouses/${DEFAULT_WAREHOUSE_ID}/alerts`
+      );
+      return {
+        alerts: res.alerts.map(mapApiAlert),
+        total: res.total,
+      };
+    },
+    placeholderData: { alerts: mockAlerts, total: mockAlerts.length },
+  });
+
+  const alerts = alertsData?.alerts ?? mockAlerts;
+  const totalCount = alertsData?.total ?? mockAlerts.length;
+  const unresolvedCount = alerts.filter((a) => a.status === "new").length;
+
+  const acknowledgeMutation = useMutation({
+    mutationFn: (alertId: string) =>
+      api.put(`/alerts/${alertId}/acknowledge`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["alerts", DEFAULT_WAREHOUSE_ID] });
+      setSelectedAlert(null);
+    },
+  });
+
+  const resolveMutation = useMutation({
+    mutationFn: (alertId: string) =>
+      api.put(`/alerts/${alertId}/resolve`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["alerts", DEFAULT_WAREHOUSE_ID] });
+      setSelectedAlert(null);
+    },
+  });
+
+  const dismissMutation = useMutation({
+    mutationFn: (alertId: string) =>
+      api.put(`/alerts/${alertId}/dismiss`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["alerts", DEFAULT_WAREHOUSE_ID] });
+      setSelectedAlert(null);
+    },
+  });
+
+  const filteredAlerts = alerts.filter((a) => {
     if (filterSeverity !== "all" && a.severity !== filterSeverity) return false;
     if (filterType !== "all" && a.type !== filterType) return false;
     if (filterStatus !== "all" && a.status !== filterStatus) return false;
@@ -112,7 +210,7 @@ const Alerts: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-text-primary">Alerts</h1>
           <p className="text-sm text-text-muted mt-1">
-            {mockAlerts.length} total alerts, {mockAlerts.filter((a) => a.status === "new").length} unresolved
+            {totalCount} total alerts, {unresolvedCount} unresolved
           </p>
         </div>
       </div>
@@ -243,9 +341,9 @@ const Alerts: React.FC = () => {
             </div>
             <AlertDetail
               alert={selectedAlert}
-              onAcknowledge={() => setSelectedAlert(null)}
-              onResolve={() => setSelectedAlert(null)}
-              onDismiss={() => setSelectedAlert(null)}
+              onAcknowledge={() => acknowledgeMutation.mutate(selectedAlert.id)}
+              onResolve={() => resolveMutation.mutate(selectedAlert.id)}
+              onDismiss={() => dismissMutation.mutate(selectedAlert.id)}
             />
           </div>
         )}

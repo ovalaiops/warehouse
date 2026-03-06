@@ -16,25 +16,67 @@ const Login: React.FC = () => {
     e.preventDefault();
     setLoading(true);
 
-    // Simulate login
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    try {
+      // Use email as the dev token (backend accepts any Bearer token in dev mode)
+      const devToken = email.replace("@", "-at-");
 
-    login(
-      {
-        id: "user-1",
-        firebaseUid: "firebase-uid-1",
-        email,
-        name: "Alex Martinez",
-        role: "admin",
-        orgId: "org-1",
-        preferences: {},
-        createdAt: "2024-01-01T00:00:00Z",
-      },
-      "mock-jwt-token-123"
-    );
+      // Call the real auth endpoint to create/get user
+      const res = await fetch("/api/v1/auth/me", {
+        headers: { Authorization: `Bearer ${devToken}` },
+      });
 
-    setLoading(false);
-    navigate("/dashboard");
+      if (res.ok) {
+        const userData = await res.json();
+        login(
+          {
+            id: userData.id,
+            firebaseUid: userData.firebase_uid,
+            email: userData.email,
+            name: userData.name || email.split("@")[0],
+            role: userData.role || "admin",
+            orgId: userData.org_id,
+            preferences: userData.preferences || {},
+            createdAt: userData.created_at,
+          },
+          devToken
+        );
+      } else {
+        // Fallback to local mock if backend unavailable
+        login(
+          {
+            id: "user-1",
+            firebaseUid: devToken,
+            email,
+            name: "Alex Martinez",
+            role: "admin",
+            orgId: "org-1",
+            preferences: {},
+            createdAt: new Date().toISOString(),
+          },
+          devToken
+        );
+      }
+
+      navigate("/dashboard");
+    } catch {
+      // Fallback for offline dev
+      login(
+        {
+          id: "user-1",
+          firebaseUid: "dev-user",
+          email,
+          name: "Alex Martinez",
+          role: "admin",
+          orgId: "org-1",
+          preferences: {},
+          createdAt: new Date().toISOString(),
+        },
+        "dev-user"
+      );
+      navigate("/dashboard");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

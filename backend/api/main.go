@@ -14,6 +14,7 @@ import (
 	"github.com/warehouse-intel/api/events"
 	"github.com/warehouse-intel/api/routes"
 	"github.com/warehouse-intel/api/services"
+	"github.com/warehouse-intel/api/telemetry"
 )
 
 func main() {
@@ -46,12 +47,16 @@ func main() {
 	inf := services.NewInferenceService(cfg.InferenceURL)
 	stor := services.NewStorageService(cfg.CloudStorageBucket)
 
+	// Telemetry
+	collector := telemetry.NewCollector()
+
 	// Events
 	pub := events.NewPublisher()
+	pub.SetCollector(collector)
 	defer pub.Close()
 
 	// Router
-	router := routes.NewRouter(cfg, database.Pool, pub, fb, inf, stor)
+	router := routes.NewRouter(cfg, database.Pool, pub, fb, inf, stor, collector)
 
 	// Server
 	srv := &http.Server{

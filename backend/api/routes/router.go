@@ -10,15 +10,16 @@ import (
 	"github.com/warehouse-intel/api/events"
 	mw "github.com/warehouse-intel/api/middleware"
 	"github.com/warehouse-intel/api/services"
+	"github.com/warehouse-intel/api/telemetry"
 )
 
-func NewRouter(cfg *config.Config, pool *pgxpool.Pool, pub *events.Publisher, fb *services.FirebaseService, inf *services.InferenceService, stor *services.StorageService) http.Handler {
+func NewRouter(cfg *config.Config, pool *pgxpool.Pool, pub *events.Publisher, fb *services.FirebaseService, inf *services.InferenceService, stor *services.StorageService, collector *telemetry.Collector) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware stack
 	r.Use(chimiddleware.RequestID)
 	r.Use(chimiddleware.RealIP)
-	r.Use(mw.Logging)
+	r.Use(mw.Logging(collector))
 	r.Use(chimiddleware.Recoverer)
 	r.Use(mw.CORS())
 
@@ -64,6 +65,18 @@ func NewRouter(cfg *config.Config, pool *pgxpool.Pool, pub *events.Publisher, fb
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ready"}`))
+	})
+
+	// Admin routes (no auth)
+	adminH := NewAdminHandler(deps, collector, cfg)
+	r.Route("/admin", func(r chi.Router) {
+		r.Get("/health", adminH.Health)
+		r.Get("/metrics", adminH.Metrics)
+		r.Get("/requests", adminH.Requests)
+		r.Get("/logs", adminH.Logs)
+		r.Get("/events", adminH.Events)
+		r.Get("/webhooks", adminH.Webhooks)
+		r.Get("/system", adminH.System)
 	})
 
 	// API v1

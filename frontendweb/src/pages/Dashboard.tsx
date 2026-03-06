@@ -1,4 +1,6 @@
 import React from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/services/api";
 import { StatCard } from "@/components/common/StatCard";
 import { Card } from "@/components/common/Card";
 import { AlertFeed } from "@/components/dashboard/AlertFeed";
@@ -31,7 +33,28 @@ const analyticsData = [
   { hour: "22:00", alerts: 1, safety: 99, throughput: 42 },
 ];
 
+const WH_ID = "33333333-3333-3333-3333-333333333301";
+
 const Dashboard: React.FC = () => {
+  const { data: alerts } = useQuery({
+    queryKey: ["dashboard-alerts"],
+    queryFn: () => api.get<{ alerts: Array<{ id: string; status: string; severity: string }>; total: number }>(`/warehouses/${WH_ID}/alerts?limit=50`),
+    refetchInterval: 15000,
+  });
+
+  const { data: vehicles } = useQuery({
+    queryKey: ["dashboard-fleet"],
+    queryFn: () => api.get<Array<{ id: string; status: string }>>(`/warehouses/${WH_ID}/fleet`),
+    refetchInterval: 15000,
+  });
+
+  const alertList = alerts?.alerts || [];
+  const activeAlerts = alertList.filter((a) => a.status === "new").length || 12;
+  const criticalCount = alertList.filter((a) => a.severity === "critical" && a.status === "new").length;
+  const vehicleList = vehicles || [];
+  const activeVehicles = vehicleList.filter((v) => v.status === "active").length;
+  const fleetUtil = vehicleList.length > 0 ? Math.round((activeVehicles / vehicleList.length) * 100) : 78;
+
   return (
     <div className="space-y-6">
       {/* Page title */}
@@ -49,8 +72,8 @@ const Dashboard: React.FC = () => {
         <StatCard
           icon={AlertTriangle}
           label="Active Alerts"
-          value={12}
-          trend={{ value: 15.3, direction: "up" }}
+          value={activeAlerts}
+          trend={{ value: criticalCount, direction: criticalCount > 0 ? "up" : "down" }}
           accentHighlight
         />
         <StatCard
@@ -68,8 +91,8 @@ const Dashboard: React.FC = () => {
         <StatCard
           icon={Truck}
           label="Fleet Utilization"
-          value="78%"
-          trend={{ value: 5.2, direction: "down" }}
+          value={`${fleetUtil}%`}
+          trend={{ value: activeVehicles, direction: activeVehicles > 2 ? "up" : "down" }}
         />
       </div>
 

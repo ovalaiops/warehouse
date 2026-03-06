@@ -11,6 +11,8 @@ import {
   Truck,
   BarChart3,
   FileText,
+  Brain,
+  Shield,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -26,6 +28,8 @@ const navItems = [
   { path: "/fleet", label: "Fleet", icon: Truck },
   { path: "/analytics", label: "Analytics", icon: BarChart3 },
   { path: "/reports", label: "Reports", icon: FileText },
+  { path: "/cosmos", label: "Cosmos AI", icon: Brain },
+  { path: "/admin", label: "Admin", icon: Shield },
   { path: "/settings", label: "Settings", icon: Settings },
 ];
 
