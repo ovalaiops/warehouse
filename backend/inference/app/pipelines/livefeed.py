@@ -24,44 +24,55 @@ logger = logging.getLogger(__name__)
 # Maximum frames to process per session to avoid runaway costs
 MAX_FRAMES_PER_SESSION = 200
 
-# Supported URL patterns
-YOUTUBE_PATTERN = re.compile(
-    r"(youtube\.com/watch|youtu\.be/|youtube\.com/live)"
+# URLs that should bypass yt-dlp (direct RTSP, local files, etc.)
+DIRECT_STREAM_PATTERN = re.compile(
+    r"^(rtsp://|rtmp://|/dev/|file://)"
 )
 
 
 def _resolve_stream_url(url: str) -> str:
-    """Resolve a URL to a direct stream URL.
+    """Resolve a URL to a direct stream URL using yt-dlp.
 
-    For YouTube, uses yt-dlp to get the direct stream URL.
-    For other URLs (IP cams, RTSP, HLS), returns as-is.
+    Uses yt-dlp for YouTube, HLS (.m3u8), and HTTP video URLs to
+    select the best quality stream. For RTSP/RTMP, returns as-is.
     """
-    if YOUTUBE_PATTERN.search(url):
-        try:
-            import yt_dlp
+    # Skip yt-dlp for direct protocols that don't need resolution
+    if DIRECT_STREAM_PATTERN.search(url):
+        return url
 
-            ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "format": "best[height<=720]",
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                stream_url = info.get("url")
-                if stream_url:
-                    logger.info("Resolved YouTube URL to direct stream")
-                    return stream_url
-                # For live streams, look in formats
-                formats = info.get("formats", [])
-                for fmt in reversed(formats):
-                    if fmt.get("url"):
-                        logger.info("Using format: %s", fmt.get("format_id"))
-                        return fmt["url"]
-        except Exception as e:
-            logger.error("yt-dlp failed to resolve URL: %s", e)
-            raise ValueError(f"Could not resolve video URL: {e}") from e
+    try:
+        import yt_dlp
 
-    # Direct stream URL (IP cam, RTSP, HLS .m3u8, etc.)
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "format": "best[height<=1080]/best",
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            stream_url = info.get("url")
+            if stream_url:
+                logger.info(
+                    "Resolved URL to direct stream (format: %s, %sx%s)",
+                    info.get("format_id", "?"),
+                    info.get("width", "?"),
+                    info.get("height", "?"),
+                )
+                return stream_url
+            # For live streams, look in formats — pick best resolution
+            formats = info.get("formats", [])
+            for fmt in reversed(formats):
+                if fmt.get("url"):
+                    logger.info("Using format: %s (%sx%s)",
+                                fmt.get("format_id"),
+                                fmt.get("width", "?"),
+                                fmt.get("height", "?"))
+                    return fmt["url"]
+    except Exception as e:
+        logger.warning("yt-dlp could not resolve URL, using as-is: %s", e)
+        # Fall through to return raw URL — it may still work with OpenCV
+        return url
+
     return url
 
 
@@ -119,44 +130,63 @@ async def stream_live_feed(
         }
         return
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    frame_skip = max(1, int(fps * interval_seconds))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
 
     yield {
         "type": "connected",
-        "message": f"Connected. Sampling every {interval_seconds}s (every {frame_skip} frames at {fps:.0f}fps)",
+        "message": f"Connected. Sampling every {interval_seconds}s at {fps:.0f}fps",
         "fps": fps,
         "timestamp": time.time(),
     }
 
-    frame_count = 0
     inference_count = 0
+    consecutive_failures = 0
+    MAX_RETRIES = 5
+
+    def _grab_latest_frame(cap_obj: cv2.VideoCapture) -> Optional[np.ndarray]:
+        """Drain buffer and return the most recent frame."""
+        frame = None
+        # Grab up to 30 frames to drain buffer, keep last good one
+        for _ in range(30):
+            ret = cap_obj.grab()
+            if not ret:
+                break
+            ret2, f = cap_obj.retrieve()
+            if ret2:
+                frame = f
+        return frame
 
     try:
         while inference_count < max_frames:
-            ret, frame = await asyncio.to_thread(cap.read)
-            if not ret:
-                yield {
-                    "type": "status",
-                    "message": "Stream ended or frame read failed. Retrying...",
-                    "timestamp": time.time(),
-                }
-                # Try to reconnect for live streams
-                await asyncio.sleep(2)
-                ret, frame = await asyncio.to_thread(cap.read)
-                if not ret:
+            # Grab the latest frame (drain any buffered frames)
+            frame = await asyncio.to_thread(_grab_latest_frame, cap)
+
+            if frame is None:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_RETRIES:
+                    yield {
+                        "type": "status",
+                        "message": "Stream ended after multiple retries.",
+                        "timestamp": time.time(),
+                    }
                     break
-
-            frame_count += 1
-
-            if frame_count % frame_skip != 0:
+                logger.warning("Frame grab failed (%d/%d), retrying...",
+                               consecutive_failures, MAX_RETRIES)
+                # Re-open the stream on repeated failures
+                if consecutive_failures >= 3:
+                    cap.release()
+                    cap = await asyncio.to_thread(cv2.VideoCapture, stream_url)
+                    if not cap.isOpened():
+                        break
+                await asyncio.sleep(1)
                 continue
 
+            consecutive_failures = 0
             inference_count += 1
 
             # Generate thumbnail for frontend display
             frame_b64 = await asyncio.to_thread(
-                _frame_to_base64_jpeg, frame, 60
+                _frame_to_base64_jpeg, frame, 85
             )
 
             # Convert to PIL for inference
@@ -196,6 +226,9 @@ async def stream_live_feed(
                     "error": str(e),
                     "processing_time_ms": round(elapsed_ms, 1),
                 }
+
+            # Wait for the configured interval before next frame
+            await asyncio.sleep(interval_seconds)
 
     except asyncio.CancelledError:
         logger.info("Live feed session cancelled")

@@ -64,12 +64,24 @@ async def run_fleet_tracking(
         )
 
         raw_result = result.get("result", {})
+        logger.info("Fleet raw_result type=%s keys=%s",
+                     type(raw_result).__name__,
+                     list(raw_result.keys()) if isinstance(raw_result, dict) else "N/A")
+
         if isinstance(raw_result, list):
             vehicles = raw_result
         elif isinstance(raw_result, dict):
-            vehicles = raw_result.get("vehicles", [])
+            vehicles = raw_result.get("vehicles") or raw_result.get("items") or []
+            # If items is a list of dicts with a "vehicles" key, unwrap
+            if isinstance(vehicles, list) and vehicles and isinstance(vehicles[0], dict) and "vehicles" in vehicles[0]:
+                vehicles = vehicles[0]["vehicles"]
         else:
             vehicles = []
+
+        if not isinstance(vehicles, list):
+            vehicles = []
+
+        logger.info("Fleet parsed %d vehicles", len(vehicles))
 
         # Convert normalized coordinates to pixel coordinates if dimensions provided
         if frame_width and frame_height:
@@ -118,38 +130,43 @@ def _convert_to_pixel_coords(
     return converted
 
 
-def _parse_fleet_detections(vehicles: list[dict]) -> list[dict]:
+def _parse_fleet_detections(vehicles: list) -> list[dict]:
     """Convert vehicle data into standardized detections."""
     detections = []
     for v in vehicles:
-        trajectory = v.get("trajectory", [])
+        if not isinstance(v, dict):
+            continue
+
+        trajectory = v.get("trajectory") or []
+        if not isinstance(trajectory, list):
+            trajectory = []
 
         # Use first trajectory point as representative location
-        bbox = None
-        if trajectory:
-            first = trajectory[0].get("point_2d", [])
-            if len(first) == 2:
-                # Create a small bounding box around the point
-                x, y = first
-                if isinstance(x, float) and x <= 1.0:
-                    # Normalized coords
-                    bbox = [x - 0.03, y - 0.03, x + 0.03, y + 0.03]
-                else:
-                    # Pixel coords
-                    bbox = [x - 20, y - 20, x + 20, y + 20]
+        bbox = v.get("bbox") or v.get("location_bbox")
+        if bbox is None and trajectory:
+            first = trajectory[0] if isinstance(trajectory[0], dict) else {}
+            pts = first.get("point_2d", [])
+            if isinstance(pts, list) and len(pts) == 2:
+                x, y = pts
+                if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                    if isinstance(x, float) and x <= 1.0:
+                        bbox = [x - 0.03, y - 0.03, x + 0.03, y + 0.03]
+                    else:
+                        bbox = [x - 20, y - 20, x + 20, y + 20]
 
-        has_near_miss = len(v.get("near_misses", [])) > 0
+        near_misses = v.get("near_misses") or []
+        has_near_miss = isinstance(near_misses, list) and len(near_misses) > 0
 
         detections.append({
-            "label": v.get("type", "vehicle"),
+            "label": v.get("type") or v.get("label") or "vehicle",
             "bbox": bbox,
-            "confidence": 0.90 if not has_near_miss else 0.95,
+            "confidence": v.get("confidence", 0.90 if not has_near_miss else 0.95),
             "trajectory": trajectory,
             "metadata": {
-                "vehicle_id": v.get("id", ""),
+                "vehicle_id": v.get("id") or v.get("vehicle_id", ""),
                 "speed_estimate": v.get("speed_estimate", "unknown"),
-                "near_misses": v.get("near_misses", []),
-                "zone_violations": v.get("zone_violations", []),
+                "near_misses": near_misses,
+                "zone_violations": v.get("zone_violations") or [],
             },
         })
 

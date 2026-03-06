@@ -67,7 +67,21 @@ _batch_jobs: dict[str, BatchJobResponse] = {}
 
 def _build_detections(raw_detections: list[dict]) -> list[Detection]:
     """Convert raw detection dicts to Detection model instances."""
-    return [Detection(**d) for d in raw_detections]
+    result = []
+    for d in raw_detections:
+        try:
+            result.append(Detection(**d))
+        except Exception:
+            # If full dict fails, extract only the fields Detection accepts
+            result.append(Detection(
+                label=d.get("label", "unknown"),
+                bbox=d.get("bbox"),
+                confidence=d.get("confidence"),
+                timestamp=d.get("timestamp"),
+                trajectory=None,
+                metadata=None,
+            ))
+    return result
 
 
 # ------------------------------------------------------------------

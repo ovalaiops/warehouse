@@ -24,7 +24,6 @@ import {
   History,
   Trash2,
   X,
-  ZoomIn,
   Maximize2,
   Activity,
   Radio,
@@ -51,18 +50,16 @@ interface AnalysisMode {
   demoHint: string;
 }
 
-interface BBox {
+interface Detection {
   label: string;
-  confidence: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+  bbox?: number[] | null; // [x1, y1, x2, y2]
+  confidence?: number | null;
+  metadata?: Record<string, unknown>;
 }
 
 interface InferenceResult {
   think?: string;
-  detections?: BBox[];
+  detections?: Detection[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
@@ -210,6 +207,84 @@ function base64ToFile(b64: string, filename: string): File {
 }
 
 // ---------------------------------------------------------------------------
+// BBox overlay for image preview
+// ---------------------------------------------------------------------------
+
+interface BBoxOverlayProps {
+  detections: Array<{ label: string; bbox?: number[] | null; confidence?: number | null }>;
+  imageNaturalSize: { w: number; h: number };
+  hoveredBbox: number | null;
+  setHoveredBbox: (idx: number | null) => void;
+}
+
+function BBoxOverlay({ detections, imageNaturalSize, hoveredBbox, setHoveredBbox }: BBoxOverlayProps) {
+  const natW = imageNaturalSize.w;
+  const natH = imageNaturalSize.h;
+
+  // Use SVG with viewBox matching image dimensions so boxes align with object-contain
+  return (
+    <svg
+      className="absolute inset-0 w-full h-full pointer-events-none"
+      viewBox={`0 0 ${natW} ${natH}`}
+      preserveAspectRatio="xMidYMid meet"
+    >
+      {detections.map((det, i) => {
+        if (!det.bbox || det.bbox.length < 4) return null;
+        let [x1, y1, x2, y2] = det.bbox;
+
+        // Convert normalized coords to pixel coords
+        if (x1 <= 1.0 && y1 <= 1.0 && x2 <= 1.0 && y2 <= 1.0) {
+          x1 *= natW; y1 *= natH; x2 *= natW; y2 *= natH;
+        }
+
+        const w = x2 - x1;
+        const h = y2 - y1;
+        if (w <= 0 || h <= 0) return null;
+
+        const color = getBBoxColor(det.label);
+        const isHovered = hoveredBbox === i;
+
+        return (
+          <g key={i} className="pointer-events-auto cursor-pointer">
+            <rect
+              x={x1} y={y1} width={w} height={h}
+              fill="none" stroke={color} strokeWidth={isHovered ? 3 : 2}
+              opacity={isHovered ? 1 : 0.7}
+              rx={2}
+              onMouseEnter={() => setHoveredBbox(i)}
+              onMouseLeave={() => setHoveredBbox(null)}
+            />
+            {/* Invisible wider hit area for easier hover */}
+            <rect
+              x={x1 - 4} y={y1 - 4} width={w + 8} height={h + 8}
+              fill="none" stroke="transparent" strokeWidth={8}
+              onMouseEnter={() => setHoveredBbox(i)}
+              onMouseLeave={() => setHoveredBbox(null)}
+            />
+            {isHovered && (
+              <>
+                <rect
+                  x={x1} y={y1 - 18}
+                  width={det.label.length * 7 + (det.confidence != null ? 30 : 0) + 8}
+                  height={16} rx={3}
+                  fill={color}
+                />
+                <text
+                  x={x1 + 4} y={y1 - 6}
+                  fontSize={11} fontFamily="monospace" fill="#08070e"
+                >
+                  {det.label}{det.confidence != null ? ` ${Math.round(det.confidence * 100)}%` : ""}
+                </text>
+              </>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -232,6 +307,9 @@ const CosmosAI: React.FC = () => {
   const [historyFilter, setHistoryFilter] = useState<string | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [showMonitoring, setShowMonitoring] = useState(false);
+  const [showBboxOverlay, setShowBboxOverlay] = useState(false);
+  const [hoveredBbox, setHoveredBbox] = useState<number | null>(null);
+  const [imageNaturalSize, setImageNaturalSize] = useState<{ w: number; h: number } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageContainerRef = useRef<HTMLDivElement>(null);
@@ -274,10 +352,19 @@ const CosmosAI: React.FC = () => {
     };
   }, [previewUrl]);
 
-  // Handle mode switch
+  // Handle mode switch — clear previous image/results
   const handleModeChange = (mode: AnalysisMode) => {
     setSelectedMode(mode);
     setPrompt(mode.defaultPrompt);
+    if (previewUrl && previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
+    setUploadedFile(null);
+    setPreviewUrl(null);
+    setResult(null);
+    setError(null);
+    setProcessingTime(null);
+    setImageSource(null);
+    setShowBboxOverlay(false);
+    setImageNaturalSize(null);
   };
 
   // File handling
@@ -515,59 +602,27 @@ const CosmosAI: React.FC = () => {
       {/* Dual Path Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* PATH 1: Generate AI Test Image */}
-        <Card
-          header={{
-            title: "Generate AI Test Image",
-            action: (
-              <Badge variant="info">
-                <Wand2 className="w-3 h-3 mr-1" />
-                Gemini AI
-              </Badge>
-            ),
-          }}
-          padding="sm"
-        >
-          <p className="text-xs text-text-muted mb-3">
-            Generate a realistic AI image using Gemini, then auto-analyze with Cosmos Reason 2. Pick a scenario to test.
-          </p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {MODES.map((mode) => {
-              const Icon = mode.icon;
-              const isActive = selectedMode.key === mode.key;
-              return (
-                <button
-                  key={mode.key}
-                  onClick={() => handleGenerateDemo(mode)}
-                  disabled={generating || loading}
-                  className={cn(
-                    "flex flex-col items-center gap-2 p-3 rounded-button border transition-all duration-200 group text-left",
-                    isActive
-                      ? "border-accent/30 bg-accent/5"
-                      : "border-border hover:border-accent/20 hover:bg-surface-elevated",
-                    (generating || loading) && "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  <div className="w-10 h-10 rounded-card bg-surface-elevated flex items-center justify-center group-hover:bg-accent/10 transition-colors">
-                    <Icon className="w-5 h-5 text-text-muted group-hover:text-accent transition-colors" />
-                  </div>
-                  <span className="text-xs font-medium text-text-secondary group-hover:text-text-primary text-center leading-tight">
-                    {mode.label}
-                  </span>
-                  <span className="text-[10px] text-text-muted text-center leading-tight">
-                    {mode.demoHint.split(",")[0]}
-                  </span>
-                </button>
-              );
-            })}
+        <Card padding="sm">
+          <div className="flex flex-col items-center gap-3 py-4">
+            <p className="text-xs text-text-muted text-center">
+              Generate a realistic AI image using Gemini for <span className="text-text-primary font-medium">{selectedMode.label}</span>, then auto-analyze with Cosmos Reason 2.
+            </p>
+            <Button
+              onClick={() => handleGenerateDemo(selectedMode)}
+              disabled={generating || loading}
+              size="lg"
+            >
+              {generating ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <Wand2 className="w-5 h-5" />
+              )}
+              {generating ? `Generating ${selectedMode.label}...` : "Generate AI Test Image"}
+            </Button>
+            <p className="text-[10px] text-text-muted">
+              {selectedMode.demoHint}
+            </p>
           </div>
-          {generating && (
-            <div className="flex items-center gap-2 mt-3 px-3 py-2 bg-accent/5 border border-accent/20 rounded-button">
-              <Loader2 className="w-4 h-4 text-accent animate-spin" />
-              <span className="text-xs text-accent font-medium">
-                Generating AI test image for {selectedMode.label}...
-              </span>
-            </div>
-          )}
         </Card>
 
         {/* PATH 2: Real Upload */}
@@ -605,7 +660,20 @@ const CosmosAI: React.FC = () => {
                   src={previewUrl}
                   alt="Uploaded"
                   className="w-full h-full object-contain max-h-[300px]"
+                  onLoad={(e) => {
+                    const img = e.currentTarget;
+                    setImageNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+                  }}
                 />
+                {/* Bounding box overlays */}
+                {showBboxOverlay && result?.detections && imageNaturalSize && (
+                  <BBoxOverlay
+                    detections={result.detections}
+                    imageNaturalSize={imageNaturalSize}
+                    hoveredBbox={hoveredBbox}
+                    setHoveredBbox={setHoveredBbox}
+                  />
+                )}
                 {imageSource && (
                   <div className="absolute top-2 left-2">
                     <Badge variant={imageSource.includes("AI") || imageSource.includes("Synthetic") ? "info" : "success"}>
@@ -613,13 +681,31 @@ const CosmosAI: React.FC = () => {
                     </Badge>
                   </div>
                 )}
-                <button
-                  onClick={(e) => { e.stopPropagation(); setLightboxUrl(previewUrl); }}
-                  className="absolute top-2 right-2 p-1.5 rounded-button bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
-                  title="View full size"
-                >
-                  <Maximize2 className="w-4 h-4" />
-                </button>
+                <div className="absolute top-2 right-2 flex items-center gap-1.5">
+                  {/* BBox toggle */}
+                  {result?.detections && result.detections.length > 0 && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setShowBboxOverlay(!showBboxOverlay); }}
+                      className={cn(
+                        "flex items-center gap-1 px-2 py-1 rounded-button text-[10px] font-medium transition-all",
+                        showBboxOverlay
+                          ? "bg-accent/80 text-white"
+                          : "bg-black/50 text-white opacity-0 group-hover:opacity-100"
+                      )}
+                      title="Toggle bounding boxes"
+                    >
+                      <Eye className="w-3 h-3" />
+                      BBox
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setLightboxUrl(previewUrl); }}
+                    className="p-1.5 rounded-button bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
+                    title="View full size"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="flex flex-col items-center gap-3 py-6">
@@ -681,48 +767,6 @@ const CosmosAI: React.FC = () => {
               <Play className="w-4 h-4" />
               Run Analysis
             </Button>
-          </div>
-        </Card>
-      )}
-
-      {/* Image Preview with BBox overlay (full width when results exist) */}
-      {previewUrl && result?.detections && result.detections.length > 0 && (
-        <Card header={{ title: "Detection Overlay" }} padding="sm">
-          <div
-            className="relative w-full max-h-[500px] overflow-hidden rounded-button group cursor-zoom-in"
-            onClick={() => setLightboxUrl(previewUrl)}
-          >
-            <img
-              src={previewUrl}
-              alt="Analysis"
-              className="w-full h-auto object-contain max-h-[500px]"
-            />
-            <div className="absolute top-2 right-2 p-1.5 rounded-button bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity">
-              <ZoomIn className="w-4 h-4" />
-            </div>
-            {result.detections.map((det, i) => (
-              <div
-                key={i}
-                className="absolute border-2 rounded-sm pointer-events-none"
-                style={{
-                  left: `${det.x}%`,
-                  top: `${det.y}%`,
-                  width: `${det.w}%`,
-                  height: `${det.h}%`,
-                  borderColor: getBBoxColor(det.label),
-                }}
-              >
-                <span
-                  className="absolute -top-5 left-0 text-[10px] px-1 py-0.5 rounded font-mono whitespace-nowrap"
-                  style={{
-                    backgroundColor: getBBoxColor(det.label),
-                    color: "#08070e",
-                  }}
-                >
-                  {det.label} {Math.round(det.confidence * 100)}%
-                </span>
-              </div>
-            ))}
           </div>
         </Card>
       )}
@@ -965,9 +1009,11 @@ const CosmosAI: React.FC = () => {
                               {det.label.replace(/_/g, " ")}
                             </span>
                           </div>
-                          <span className="text-xs text-text-muted font-mono">
-                            {Math.round(det.confidence * 100)}%
-                          </span>
+                          {det.confidence != null && (
+                            <span className="text-xs text-text-muted font-mono">
+                              {Math.round(det.confidence * 100)}%
+                            </span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1122,9 +1168,12 @@ const CosmosAI: React.FC = () => {
                     className="border border-border rounded-button overflow-hidden bg-surface"
                   >
                     {/* Collapsed row */}
-                    <button
+                    <div
+                      role="button"
+                      tabIndex={0}
                       onClick={() => setExpandedHistoryId(isExpanded ? null : entry.id)}
-                      className="flex items-center gap-3 w-full px-3 py-2.5 text-left hover:bg-surface-elevated/50 transition-colors"
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedHistoryId(isExpanded ? null : entry.id); } }}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 text-left hover:bg-surface-elevated/50 transition-colors cursor-pointer"
                     >
                       {/* Thumbnail */}
                       <img
@@ -1170,7 +1219,7 @@ const CosmosAI: React.FC = () => {
                           <ChevronRight className="w-4 h-4 text-text-muted" />
                         )}
                       </div>
-                    </button>
+                    </div>
 
                     {/* Expanded detail */}
                     {isExpanded && (

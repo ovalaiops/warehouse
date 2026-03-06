@@ -10,11 +10,11 @@ import {
   Clock,
   Brain,
   AlertTriangle,
-  ChevronDown,
-  ChevronRight,
   Maximize2,
   X,
   ExternalLink,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -44,14 +44,14 @@ interface LiveFeedEvent {
 
 const SAMPLE_URLS = [
   {
-    label: "YouTube Live (example)",
-    url: "https://www.youtube.com/watch?v=ydYDqZQpim8",
-    description: "Jackson Hole Town Square",
+    label: "Public HLS Stream",
+    url: "https://cph-p2p-msl.akamaized.net/hls/live/2000341/test/master.m3u8",
+    description: "Akamai public HLS test stream",
   },
   {
-    label: "YouTube Live (traffic)",
-    url: "https://www.youtube.com/watch?v=1EiC9bvVGnk",
-    description: "Abbey Road Crossing",
+    label: "Big Buck Bunny (HLS)",
+    url: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+    description: "Mux HLS test stream",
   },
 ];
 
@@ -76,6 +76,11 @@ const DEFAULT_PROMPTS = [
     prompt:
       "Detect any anomalies or unusual events in this frame. Look for unexpected objects, unusual behavior, obstructions, or anything out of the ordinary.",
   },
+  {
+    label: "Predict Next Action",
+    prompt:
+      "Based on what you observe in this frame, predict the next likely actions or events. Consider people's trajectories, vehicle movements, ongoing activities, and environmental cues. Return structured data.",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -89,25 +94,50 @@ export const LiveFeedPanel: React.FC = () => {
   const [maxFrames, setMaxFrames] = useState(50);
   const [streaming, setStreaming] = useState(false);
   const [events, setEvents] = useState<LiveFeedEvent[]>([]);
-  const [expandedFrame, setExpandedFrame] = useState<number | null>(null);
+  const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const eventSourceRef = useRef<EventSource | null>(null);
-  const feedEndRef = useRef<HTMLDivElement>(null);
+  const reasoningTopRef = useRef<HTMLDivElement>(null);
+  const hasStreamErrorRef = useRef(false);
 
-  // Auto-scroll to latest result
+  const inferenceEvents = events.filter((e) => e.type === "inference");
+  const errorEvents = events.filter((e) => e.type === "error" && e.frame_number);
+  const statusEvents = events.filter(
+    (e) => e.type === "status" || e.type === "connected"
+  );
+  const totalProcessingMs = inferenceEvents.reduce(
+    (sum, e) => sum + (e.processing_time_ms || 0),
+    0
+  );
+  const avgLatency =
+    inferenceEvents.length > 0
+      ? Math.round(totalProcessingMs / inferenceEvents.length)
+      : 0;
+
+  // The "active" frame shown on the left — latest or user-selected
+  const activeEvent =
+    selectedFrame !== null
+      ? inferenceEvents[selectedFrame]
+      : inferenceEvents[inferenceEvents.length - 1] || null;
+
+  // Auto-scroll reasoning feed to top (latest frames)
   useEffect(() => {
-    if (feedEndRef.current && streaming) {
-      feedEndRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (reasoningTopRef.current && streaming && selectedFrame === null) {
+      reasoningTopRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
-  }, [events.length, streaming]);
+  }, [events.length, streaming, selectedFrame]);
 
   const startStream = useCallback(() => {
     if (!url.trim()) return;
 
     setStreaming(true);
     setEvents([]);
+    setSelectedFrame(null);
+    setConnectionError(null);
+    hasStreamErrorRef.current = false;
 
     const params = new URLSearchParams({
       url: url.trim(),
@@ -124,21 +154,29 @@ export const LiveFeedPanel: React.FC = () => {
         const data: LiveFeedEvent = JSON.parse(event.data);
         setEvents((prev) => [...prev, data]);
 
-        if (data.type === "ended" || data.type === "error") {
-          // Don't auto-close on individual frame errors
-          if (data.type === "ended") {
-            es.close();
-            setStreaming(false);
-          }
+        if (data.type === "ended") {
+          es.close();
+          setStreaming(false);
+        }
+        if (data.type === "error" && !data.frame_number) {
+          hasStreamErrorRef.current = true;
+          setConnectionError(data.error || "Stream connection failed");
+          es.close();
+          setStreaming(false);
         }
       } catch {
         // ignore parse errors
       }
     };
 
-    es.onerror = () => {
+    es.onerror = (err) => {
+      console.error("EventSource error:", err);
       es.close();
       setStreaming(false);
+      // Only set generic error if we haven't already captured a specific error
+      if (!hasStreamErrorRef.current) {
+        setConnectionError("Connection lost or failed. The stream may have ended.");
+      }
     };
   }, [url, prompt, interval, maxFrames]);
 
@@ -150,7 +188,6 @@ export const LiveFeedPanel: React.FC = () => {
     setStreaming(false);
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (eventSourceRef.current) {
@@ -158,20 +195,6 @@ export const LiveFeedPanel: React.FC = () => {
       }
     };
   }, []);
-
-  const inferenceEvents = events.filter((e) => e.type === "inference");
-  const errorEvents = events.filter((e) => e.type === "error" && e.frame_number);
-  const statusEvents = events.filter(
-    (e) => e.type === "status" || e.type === "connected"
-  );
-  const totalProcessingMs = inferenceEvents.reduce(
-    (sum, e) => sum + (e.processing_time_ms || 0),
-    0
-  );
-  const avgLatency =
-    inferenceEvents.length > 0
-      ? Math.round(totalProcessingMs / inferenceEvents.length)
-      : 0;
 
   return (
     <div className="space-y-4">
@@ -195,46 +218,23 @@ export const LiveFeedPanel: React.FC = () => {
         </div>
       )}
 
-      {/* URL Input + Controls */}
+      {/* STEP 1: Enter URL */}
       <Card padding="md">
         <div className="space-y-3">
-          {/* URL input */}
-          <div>
-            <label className="text-xs font-medium text-text-secondary mb-1 block">
-              Live Feed URL
+          <div className="flex items-center gap-2 mb-1">
+            <span className="flex items-center justify-center w-5 h-5 rounded-full bg-accent/10 text-accent text-[10px] font-bold">1</span>
+            <label className="text-xs font-medium text-text-secondary">
+              Enter Live Feed URL
             </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="YouTube Live URL, IP camera URL, HLS .m3u8, RTSP..."
-                className="flex-1 bg-surface-elevated border border-border rounded-button px-3 py-2 text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-accent"
-                disabled={streaming}
-              />
-              {!streaming ? (
-                <Button
-                  onClick={startStream}
-                  disabled={!url.trim()}
-                  className="flex items-center gap-2"
-                >
-                  <Play className="w-4 h-4" />
-                  Start
-                </Button>
-              ) : (
-                <Button
-                  onClick={stopStream}
-                  variant="secondary"
-                  className="flex items-center gap-2 !border-critical/30 !text-critical hover:!bg-critical/10"
-                >
-                  <Square className="w-4 h-4" />
-                  Stop
-                </Button>
-              )}
-            </div>
           </div>
-
-          {/* Quick URL buttons */}
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="YouTube Live URL, IP camera URL, HLS .m3u8, RTSP..."
+            className="w-full bg-surface-elevated border border-border rounded-button px-3 py-2 text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-accent"
+            disabled={streaming}
+          />
           {!streaming && (
             <div className="flex flex-wrap gap-2">
               {SAMPLE_URLS.map((s) => (
@@ -250,49 +250,52 @@ export const LiveFeedPanel: React.FC = () => {
               ))}
             </div>
           )}
+        </div>
+      </Card>
 
-          {/* Prompt */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
+      {/* STEP 2: Select Prompt */}
+      <Card padding="md">
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-accent/10 text-accent text-[10px] font-bold">2</span>
               <label className="text-xs font-medium text-text-secondary">
-                Prompt (applied to each frame)
+                Select Analysis Prompt
               </label>
-              <button
-                onClick={() => setShowSettings(!showSettings)}
-                className="text-[10px] text-text-muted hover:text-accent"
-              >
-                {showSettings ? "Hide" : "Show"} Settings
-              </button>
             </div>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={2}
-              className="w-full bg-surface-elevated border border-border rounded-button px-3 py-2 text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-accent resize-none"
-              disabled={streaming}
-            />
-            {/* Quick prompt buttons */}
-            {!streaming && (
-              <div className="flex flex-wrap gap-1.5 mt-1.5">
-                {DEFAULT_PROMPTS.map((p) => (
-                  <button
-                    key={p.label}
-                    onClick={() => setPrompt(p.prompt)}
-                    className={cn(
-                      "px-2 py-0.5 text-[10px] rounded border transition-colors",
-                      prompt === p.prompt
-                        ? "bg-accent/10 text-accent border-accent/30"
-                        : "border-border text-text-muted hover:text-text-secondary"
-                    )}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            )}
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className="text-[10px] text-text-muted hover:text-accent"
+            >
+              {showSettings ? "Hide" : "Show"} Settings
+            </button>
           </div>
+          <div className="flex flex-wrap gap-1.5">
+            {DEFAULT_PROMPTS.map((p) => (
+              <button
+                key={p.label}
+                onClick={() => !streaming && setPrompt(p.prompt)}
+                disabled={streaming}
+                className={cn(
+                  "px-3 py-1.5 text-xs rounded-button border transition-colors font-medium",
+                  prompt === p.prompt
+                    ? "bg-accent/10 text-accent border-accent/30"
+                    : "border-border text-text-muted hover:text-text-secondary hover:border-accent/20",
+                  streaming && "opacity-60 cursor-not-allowed"
+                )}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={2}
+            className="w-full bg-surface-elevated border border-border rounded-button px-3 py-2 text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-accent resize-none"
+            disabled={streaming}
+          />
 
-          {/* Settings */}
           {showSettings && !streaming && (
             <div className="grid grid-cols-2 gap-4 p-3 bg-surface-elevated rounded-button border border-border">
               <div>
@@ -337,205 +340,292 @@ export const LiveFeedPanel: React.FC = () => {
         </div>
       </Card>
 
+      {/* STEP 3: Start / Stop */}
+      <Card padding="md">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="flex items-center justify-center w-5 h-5 rounded-full bg-accent/10 text-accent text-[10px] font-bold">3</span>
+            <label className="text-xs font-medium text-text-secondary">
+              Start Analysis
+            </label>
+          </div>
+          <div className="flex-1" />
+          {!streaming ? (
+            <Button
+              onClick={startStream}
+              disabled={!url.trim()}
+              size="lg"
+            >
+              <Play className="w-5 h-5" />
+              Start Live Analysis
+            </Button>
+          ) : (
+            <Button
+              onClick={stopStream}
+              variant="danger"
+              size="lg"
+            >
+              <Square className="w-5 h-5" />
+              Stop
+            </Button>
+          )}
+        </div>
+        {connectionError && !streaming && (
+          <div className="flex items-center gap-2 mt-3 px-3 py-2 bg-critical/5 border border-critical/20 rounded-button">
+            <AlertTriangle className="w-4 h-4 text-critical flex-shrink-0" />
+            <span className="text-xs text-critical">{connectionError}</span>
+          </div>
+        )}
+      </Card>
+
       {/* Live Stats Bar */}
       {events.length > 0 && (
-        <div className="flex items-center gap-4 px-4 py-2 bg-surface-elevated rounded-button border border-border text-xs">
-          {streaming && (
-            <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-critical animate-pulse" />
-              <span className="text-critical font-medium">LIVE</span>
-            </div>
-          )}
-          <div className="flex items-center gap-1 text-text-muted">
-            <Brain className="w-3 h-3" />
-            <span>{inferenceEvents.length} frames analyzed</span>
-          </div>
-          {avgLatency > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-4 px-4 py-2 bg-surface-elevated rounded-button border border-border text-xs">
+            {streaming && (
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-full bg-critical animate-pulse" />
+                <span className="text-critical font-medium">LIVE</span>
+              </div>
+            )}
             <div className="flex items-center gap-1 text-text-muted">
-              <Clock className="w-3 h-3" />
-              <span>Avg {avgLatency}ms</span>
+              <Brain className="w-3 h-3" />
+              <span>{inferenceEvents.length} frames analyzed</span>
             </div>
-          )}
-          {errorEvents.length > 0 && (
-            <div className="flex items-center gap-1 text-critical">
-              <AlertTriangle className="w-3 h-3" />
-              <span>{errorEvents.length} errors</span>
+            {avgLatency > 0 && (
+              <div className="flex items-center gap-1 text-text-muted">
+                <Clock className="w-3 h-3" />
+                <span>Avg {avgLatency}ms</span>
+              </div>
+            )}
+            {errorEvents.length > 0 && (
+              <div className="flex items-center gap-1 text-critical">
+                <AlertTriangle className="w-3 h-3" />
+                <span>{errorEvents.length} errors</span>
+              </div>
+            )}
+            {statusEvents.length > 0 && (
+              <span className="text-text-muted ml-auto truncate max-w-xs">
+                {statusEvents[statusEvents.length - 1].message}
+              </span>
+            )}
+          </div>
+          {/* Show stream-level errors (e.g. YouTube bot detection) */}
+          {events.filter((e) => e.type === "error" && !e.frame_number).map((e, i) => (
+            <div key={i} className="flex items-center gap-2 px-4 py-2 bg-critical/5 border border-critical/20 rounded-button">
+              <AlertTriangle className="w-4 h-4 text-critical flex-shrink-0" />
+              <span className="text-xs text-critical">{e.error}</span>
             </div>
-          )}
-          {statusEvents.length > 0 && (
-            <span className="text-text-muted ml-auto truncate max-w-xs">
-              {statusEvents[statusEvents.length - 1].message}
-            </span>
-          )}
+          ))}
         </div>
       )}
 
-      {/* Results Feed */}
+      {/* ============================================================= */}
+      {/* SIDE-BY-SIDE: Live Frame (left) + Reasoning Feed (right)       */}
+      {/* ============================================================= */}
       {inferenceEvents.length > 0 && (
-        <Card
-          header={{
-            title: (
-              <span className="flex items-center gap-2">
-                <Radio className="w-4 h-4 text-accent" />
-                Live Inference Results
-              </span>
-            ),
-            action: (
-              <span className="text-[10px] text-text-muted">
-                {inferenceEvents.length} / {maxFrames} frames
-              </span>
-            ),
-          }}
-          padding="sm"
-        >
-          <div className="space-y-3 max-h-[600px] overflow-y-auto">
-            {inferenceEvents.map((event, idx) => {
-              const isExpanded = expandedFrame === idx;
-              return (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* LEFT — Current Frame */}
+          <Card
+            header={{
+              title: (
+                <span className="flex items-center gap-2">
+                  <Radio className="w-4 h-4 text-accent" />
+                  Live Frame
+                  {streaming && (
+                    <span className="w-2 h-2 rounded-full bg-critical animate-pulse" />
+                  )}
+                </span>
+              ),
+              action: activeEvent ? (
+                <span className="text-[10px] text-text-muted">
+                  Frame #{activeEvent.frame_number} &middot;{" "}
+                  {new Date(activeEvent.timestamp * 1000).toLocaleTimeString()}
+                </span>
+              ) : undefined,
+            }}
+            padding="sm"
+          >
+            {activeEvent?.frame_base64 ? (
+              <div className="space-y-3">
+                {/* Large frame display */}
                 <div
-                  key={idx}
-                  className="bg-surface-elevated rounded-button border border-border overflow-hidden"
+                  className="relative cursor-zoom-in group"
+                  onClick={() =>
+                    setLightboxSrc(
+                      `data:image/jpeg;base64,${activeEvent.frame_base64}`
+                    )
+                  }
                 >
-                  {/* Frame header */}
-                  <div
-                    className="flex items-center gap-3 p-3 cursor-pointer hover:bg-surface"
-                    onClick={() =>
-                      setExpandedFrame(isExpanded ? null : idx)
-                    }
-                  >
-                    {/* Thumbnail */}
-                    {event.frame_base64 && (
-                      <div
-                        className="w-16 h-12 rounded overflow-hidden flex-shrink-0 cursor-zoom-in"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setLightboxSrc(
-                            `data:image/jpeg;base64,${event.frame_base64}`
-                          );
-                        }}
-                      >
-                        <img
-                          src={`data:image/jpeg;base64,${event.frame_base64}`}
-                          alt={`Frame ${event.frame_number}`}
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-                    )}
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-text-primary">
-                          Frame #{event.frame_number}
-                        </span>
-                        <Badge variant="info">
-                          {event.processing_time_ms}ms
-                        </Badge>
-                        <span className="text-[10px] text-text-muted">
-                          {new Date(
-                            event.timestamp * 1000
-                          ).toLocaleTimeString()}
-                        </span>
-                      </div>
-                      {/* One-line summary from reasoning */}
-                      {event.reasoning && (
-                        <p className="text-[11px] text-text-muted truncate mt-0.5">
-                          {event.reasoning.slice(0, 150)}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {event.frame_base64 && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setLightboxSrc(
-                              `data:image/jpeg;base64,${event.frame_base64}`
-                            );
-                          }}
-                          className="text-text-muted hover:text-accent"
-                        >
-                          <Maximize2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                      {isExpanded ? (
-                        <ChevronDown className="w-4 h-4 text-text-muted" />
-                      ) : (
-                        <ChevronRight className="w-4 h-4 text-text-muted" />
-                      )}
-                    </div>
+                  <img
+                    src={`data:image/jpeg;base64,${activeEvent.frame_base64}`}
+                    alt={`Frame ${activeEvent.frame_number}`}
+                    className="w-full rounded object-contain max-h-[400px] bg-black"
+                  />
+                  <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Maximize2 className="w-5 h-5 text-white drop-shadow-lg" />
                   </div>
+                  {/* Overlay badges */}
+                  <div className="absolute bottom-2 left-2 flex gap-1.5">
+                    <Badge variant="info">
+                      {activeEvent.processing_time_ms}ms
+                    </Badge>
+                    <Badge variant="success">
+                      {activeEvent.model}
+                    </Badge>
+                  </div>
+                </div>
 
-                  {/* Expanded details */}
-                  {isExpanded && (
-                    <div className="border-t border-border p-3 space-y-3">
-                      {/* Full frame */}
-                      {event.frame_base64 && (
-                        <div
-                          className="cursor-zoom-in"
+                {/* Frame thumbnail strip — newest first */}
+                {inferenceEvents.length > 1 && (
+                  <div className="flex gap-1.5 overflow-x-auto pb-1">
+                    {inferenceEvents.slice().reverse().map((ev, revIdx) => {
+                      const idx = inferenceEvents.length - 1 - revIdx;
+                      return (
+                        <button
+                          key={idx}
                           onClick={() =>
-                            setLightboxSrc(
-                              `data:image/jpeg;base64,${event.frame_base64}`
+                            setSelectedFrame(
+                              selectedFrame === idx ? null : idx
                             )
                           }
+                          className={cn(
+                            "flex-shrink-0 w-14 h-10 rounded overflow-hidden border-2 transition-all",
+                            (selectedFrame === idx ||
+                              (selectedFrame === null &&
+                                idx === inferenceEvents.length - 1))
+                              ? "border-accent shadow-[0_0_8px_rgba(0,255,178,0.3)]"
+                              : "border-transparent opacity-60 hover:opacity-100"
+                          )}
                         >
-                          <img
-                            src={`data:image/jpeg;base64,${event.frame_base64}`}
-                            alt={`Frame ${event.frame_number}`}
-                            className="w-full max-h-64 object-contain rounded"
-                          />
-                        </div>
-                      )}
+                          {ev.frame_base64 ? (
+                            <img
+                              src={`data:image/jpeg;base64,${ev.frame_base64}`}
+                              alt={`Frame ${ev.frame_number}`}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full bg-surface-elevated flex items-center justify-center">
+                              <span className="text-[8px] text-text-muted">
+                                #{ev.frame_number}
+                              </span>
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-64 text-text-muted">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            )}
+          </Card>
 
-                      {/* Reasoning */}
-                      {event.reasoning && (
-                        <div>
-                          <p className="text-[10px] font-medium text-text-secondary mb-1">
-                            Reasoning
-                          </p>
-                          <p className="text-xs text-text-muted whitespace-pre-wrap bg-surface p-2 rounded max-h-32 overflow-y-auto">
-                            {event.reasoning}
-                          </p>
-                        </div>
-                      )}
+          {/* RIGHT — Reasoning + Results Feed */}
+          <Card
+            header={{
+              title: (
+                <span className="flex items-center gap-2">
+                  <Brain className="w-4 h-4 text-purple-400" />
+                  Cosmos Reason 2 Output
+                </span>
+              ),
+              action: (
+                <span className="text-[10px] text-text-muted">
+                  {inferenceEvents.length} / {maxFrames} frames
+                </span>
+              ),
+            }}
+            padding="sm"
+          >
+            <div className="space-y-3 max-h-[500px] overflow-y-auto">
+              <div ref={reasoningTopRef} />
 
-                      {/* Structured result */}
-                      {event.result &&
-                        Object.keys(event.result).length > 0 && (
-                          <div>
-                            <p className="text-[10px] font-medium text-text-secondary mb-1">
-                              Structured Output
+              {/* Timeline of all frames — newest first, click to expand */}
+              <div>
+                <p className="text-[10px] font-medium text-text-secondary mb-2">
+                  Frame Timeline
+                </p>
+                {inferenceEvents
+                  .slice()
+                  .reverse()
+                  .map((event, revIdx) => {
+                    const idx = inferenceEvents.length - 1 - revIdx;
+                    const isExpanded = selectedFrame === idx;
+                    return (
+                      <div key={idx} className="mb-1">
+                        <div
+                          onClick={() =>
+                            setSelectedFrame(isExpanded ? null : idx)
+                          }
+                          className={cn(
+                            "flex items-start gap-2 p-2 rounded cursor-pointer transition-colors",
+                            isExpanded
+                              ? "bg-accent/5 border border-accent/20"
+                              : "hover:bg-surface-elevated"
+                          )}
+                        >
+                          {/* Mini thumbnail */}
+                          {event.frame_base64 && (
+                            <div className="w-10 h-7 rounded overflow-hidden flex-shrink-0">
+                              <img
+                                src={`data:image/jpeg;base64,${event.frame_base64}`}
+                                alt={`Frame ${event.frame_number}`}
+                                className="w-full h-full object-cover"
+                              />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-medium text-text-primary">
+                                #{event.frame_number}
+                              </span>
+                              <Badge variant="info">
+                                {event.processing_time_ms}ms
+                              </Badge>
+                              <span className="text-[9px] text-text-muted">
+                                {new Date(
+                                  event.timestamp * 1000
+                                ).toLocaleTimeString()}
+                              </span>
+                            </div>
+                            <p className={cn(
+                              "text-[10px] text-text-muted mt-0.5",
+                              isExpanded ? "whitespace-pre-wrap" : "line-clamp-2"
+                            )}>
+                              {event.reasoning
+                                ? event.reasoning
+                                : event.raw_output || "Processing..."}
                             </p>
-                            <pre className="text-[10px] text-text-muted bg-surface p-2 rounded overflow-x-auto max-h-40 overflow-y-auto">
-                              {JSON.stringify(event.result, null, 2)}
-                            </pre>
+
+                            {isExpanded && event.result &&
+                              Object.keys(event.result).length > 0 && (
+                                <div className="mt-2">
+                                  <p className="text-[10px] font-medium text-text-secondary mb-1">
+                                    Structured Output
+                                  </p>
+                                  <pre className="text-[10px] text-text-muted bg-surface p-2 rounded overflow-x-auto whitespace-pre-wrap">
+                                    {JSON.stringify(event.result, null, 2)}
+                                  </pre>
+                                </div>
+                              )}
                           </div>
-                        )}
-
-                      {/* Raw output */}
-                      {event.raw_output && (
-                        <div>
-                          <p className="text-[10px] font-medium text-text-secondary mb-1">
-                            Raw Output
-                          </p>
-                          <pre className="text-[10px] text-text-muted bg-surface p-2 rounded overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap">
-                            {event.raw_output}
-                          </pre>
+                          {isExpanded ? (
+                            <ChevronDown className="w-3 h-3 text-accent flex-shrink-0 mt-1" />
+                          ) : (
+                            <ChevronRight className="w-3 h-3 text-text-muted flex-shrink-0 mt-1" />
+                          )}
                         </div>
-                      )}
-
-                      <div className="flex items-center gap-3 text-[10px] text-text-muted">
-                        <span>Model: {event.model}</span>
-                        <span>Latency: {event.processing_time_ms}ms</span>
                       </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            <div ref={feedEndRef} />
-          </div>
-        </Card>
+                    );
+                  })}
+              </div>
+            </div>
+          </Card>
+        </div>
       )}
 
       {/* Empty state */}
@@ -566,7 +656,7 @@ export const LiveFeedPanel: React.FC = () => {
         </Card>
       )}
 
-      {/* Streaming indicator */}
+      {/* Streaming - waiting for first frame */}
       {streaming && inferenceEvents.length === 0 && (
         <Card padding="lg">
           <div className="text-center py-8">
