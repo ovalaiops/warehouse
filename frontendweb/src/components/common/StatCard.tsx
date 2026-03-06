@@ -47,7 +47,7 @@ export const StatCard: React.FC<StatCardProps> = ({
         <p className="text-xs text-text-muted font-medium uppercase tracking-wider">
           {label}
         </p>
-        <p className="text-2xl font-bold text-text-primary mt-1">{value}</p>
+        <p className="text-2xl font-bold text-text-primary mt-1 font-display">{value}</p>
         {trend && (
           <div className="flex items-center gap-1 mt-1">
             {trend.direction === "up" ? (

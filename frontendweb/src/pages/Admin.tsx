@@ -393,7 +393,7 @@ const Admin: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary">Admin Dashboard</h1>
+          <h1 className="text-2xl font-bold text-text-primary font-display">Admin Dashboard</h1>
           <p className="text-sm text-text-muted mt-1">System health, traffic, and operations monitoring</p>
         </div>
         <button
@@ -474,9 +474,19 @@ const Admin: React.FC = () => {
         <div className="lg:col-span-4">
           <Card header={{ title: "Status Codes", action: <span className="text-xs text-text-muted">Distribution</span> }} padding="md">
             <div className="h-72 flex flex-col items-center justify-center">
-              <ResponsiveContainer width="100%" height={180}>
+              <ResponsiveContainer width="100%" height={200}>
                 <PieChart>
-                  <Pie data={mockStatusCodes} cx="50%" cy="50%" innerRadius={50} outerRadius={75} paddingAngle={3} dataKey="value">
+                  <Pie
+                    data={mockStatusCodes}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={75}
+                    paddingAngle={3}
+                    dataKey="value"
+                    label={({ name, value }) => `${name}: ${value}%`}
+                    labelLine={false}
+                  >
                     {mockStatusCodes.map((entry, i) => (
                       <Cell key={i} fill={entry.color} />
                     ))}
@@ -484,12 +494,12 @@ const Admin: React.FC = () => {
                   <Tooltip contentStyle={tooltipStyle} />
                 </PieChart>
               </ResponsiveContainer>
-              <div className="flex flex-wrap justify-center gap-3 mt-2">
+              <div className="flex flex-wrap justify-center gap-4 mt-3">
                 {mockStatusCodes.map((s) => (
-                  <div key={s.name} className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: s.color }} />
-                    <span className="text-xs text-text-secondary">{s.name}</span>
-                    <span className="text-xs font-medium text-text-primary">{s.value}%</span>
+                  <div key={s.name} className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: s.color }} />
+                    <span className="text-sm text-text-primary font-medium">{s.name}</span>
+                    <span className="text-sm font-bold" style={{ color: s.color }}>{s.value}%</span>
                   </div>
                 ))}
               </div>

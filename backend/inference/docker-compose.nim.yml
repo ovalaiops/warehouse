@@ -1,0 +1,21 @@
+services:
+  cosmos-nim:
+    image: nvcr.io/nim/nvidia/cosmos-reason2-2b:1.6.0
+    ports:
+      - "8000:8000"
+    environment:
+      - NGC_API_KEY=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
+    volumes:
+      - nim-cache:/opt/nim/.cache
+    shm_size: "16gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  nim-cache:

@@ -23,12 +23,22 @@ export default defineConfig({
         secure: true,
       },
       "/infer": {
-        target: "https://warehouse-inference-m5p6hcoypa-uc.a.run.app",
+        target: "https://inference-demo-46825724091.us-central1.run.app",
         changeOrigin: true,
         secure: true,
       },
       "/models": {
-        target: "https://warehouse-inference-m5p6hcoypa-uc.a.run.app",
+        target: "https://inference-demo-46825724091.us-central1.run.app",
+        changeOrigin: true,
+        secure: true,
+      },
+      "/generate": {
+        target: "https://inference-demo-46825724091.us-central1.run.app",
+        changeOrigin: true,
+        secure: true,
+      },
+      "/monitoring": {
+        target: "https://inference-demo-46825724091.us-central1.run.app",
         changeOrigin: true,
         secure: true,
       },

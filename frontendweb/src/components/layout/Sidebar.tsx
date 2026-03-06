@@ -61,7 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggle }) => {
           <div className="w-3 h-3 rounded-full bg-accent shadow-[0_0_10px_rgba(0,255,178,0.5)]" />
         </div>
         {!collapsed && (
-          <span className="text-lg font-bold text-text-primary tracking-tight whitespace-nowrap">
+          <span className="text-lg font-bold text-text-primary tracking-tight whitespace-nowrap font-display">
             WareHouse <span className="text-accent">AI</span>
           </span>
         )}

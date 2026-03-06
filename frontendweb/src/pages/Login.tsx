@@ -94,7 +94,7 @@ const Login: React.FC = () => {
             <div className="w-10 h-10 rounded-button bg-accent/10 flex items-center justify-center">
               <div className="w-4 h-4 rounded-full bg-accent shadow-[0_0_15px_rgba(0,255,178,0.5)]" />
             </div>
-            <span className="text-2xl font-bold text-text-primary tracking-tight">
+            <span className="text-2xl font-bold text-text-primary tracking-tight font-display">
               WareHouse <span className="text-accent">AI</span>
             </span>
           </div>
@@ -105,7 +105,7 @@ const Login: React.FC = () => {
 
         {/* Login card */}
         <div className="bg-surface border border-border rounded-card p-8">
-          <h1 className="text-xl font-bold text-text-primary mb-1">
+          <h1 className="text-xl font-bold text-text-primary mb-1 font-display">
             Welcome back
           </h1>
           <p className="text-sm text-text-muted mb-6">

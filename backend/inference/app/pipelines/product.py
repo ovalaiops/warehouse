@@ -36,11 +36,17 @@ async def run_product_recognition(
     start_time = time.time()
 
     try:
-        if not is_image_file(filename):
-            return _error_response(f"Product recognition requires an image file, got: {filename}")
+        images = None
 
-        img = await load_image_from_upload(file_content, filename)
-        images = [img]
+        if is_image_file(filename):
+            try:
+                img = await load_image_from_upload(file_content, filename)
+                images = [img]
+            except Exception as img_err:
+                logger.warning("Could not load image %s, falling through to demo mode: %s", filename, img_err)
+        else:
+            # For unrecognized extensions, still try demo mode rather than erroring
+            logger.warning("Unrecognized file type %s, falling through to demo mode", filename)
 
         # First pass: product recognition
         product_result = run_inference(

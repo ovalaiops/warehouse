@@ -32,6 +32,7 @@ TASK_CATEGORY = {
     "caption": "reasoning",
     "temporal": "reasoning",
     "weight": "reasoning",
+    "livefeed": "realtime",
 }
 
 
@@ -110,7 +111,11 @@ def parse_response(raw_output: str) -> dict[str, Any]:
     # Try to extract JSON from the answer
     json_obj = _extract_json(answer_text)
     if json_obj is not None:
-        result["result"] = json_obj
+        # Ensure result is always a dict so pipelines can call .get()
+        if isinstance(json_obj, list):
+            result["result"] = {"items": json_obj}
+        else:
+            result["result"] = json_obj
 
     return result
 
@@ -159,6 +164,8 @@ def run_inference(
 ) -> dict[str, Any]:
     """Run inference through Cosmos Reason 2.
 
+    Uses local vLLM when GPU is available, or NVIDIA NIM API when running on Cloud Run.
+
     Args:
         prompt: The text prompt to send to the model.
         task: Task type for model selection and sampling params.
@@ -171,9 +178,9 @@ def run_inference(
     manager = ModelManager.get_instance()
     model, model_size = manager.get_model(task)
 
-    if manager.demo_mode or model is None:
-        logger.info("Running in demo mode for task=%s", task)
-        return _demo_response(task, model_size)
+    if model is None:
+        # No local GPU — use NVIDIA NIM API for Cosmos Reason 2 inference
+        return _run_nim_inference(prompt, task, images, video_frames, model_size)
 
     messages = build_messages(prompt, images=images, video_frames=video_frames)
 
@@ -210,395 +217,74 @@ def run_inference(
         }
 
 
-def _demo_response(task: str, model_size: ModelSize) -> dict[str, Any]:
-    """Generate realistic mock responses for demo mode."""
-    model_name = f"Cosmos-Reason2-{model_size.value}"
+def _run_nim_inference(
+    prompt: str,
+    task: str,
+    images: Optional[list[Image.Image]],
+    video_frames: Optional[list[Image.Image]],
+    model_size: "ModelSize",
+) -> dict[str, Any]:
+    """Run inference via NVIDIA NIM API (hosted Cosmos Reason 2)."""
+    import httpx
 
-    demo_responses = {
-        "safety": {
-            "reasoning": (
-                "I can see a warehouse floor with multiple workers and a forklift operating "
-                "in aisle 3. One worker near the loading dock (bottom-right quadrant) is not "
-                "wearing a hard hat. The forklift is turning into aisle 4 where a pedestrian "
-                "is walking - this is a potential near-miss situation. I also notice a pallet "
-                "stack on rack B3 that appears to be leaning slightly to the left, which could "
-                "be an unstable stack hazard. The emergency exit in the back wall appears clear."
-            ),
-            "result": {
-                "violations": [
-                    {
-                        "type": "missing_ppe",
-                        "severity": "warning",
-                        "location_bbox": [0.72, 0.68, 0.85, 0.95],
-                        "timestamp": "00:03",
-                        "description": "Worker near loading dock not wearing required hard hat",
-                        "involved_entities": ["worker_1"],
-                    },
-                    {
-                        "type": "forklift_near_miss",
-                        "severity": "critical",
-                        "location_bbox": [0.30, 0.40, 0.55, 0.70],
-                        "timestamp": "00:07",
-                        "description": "Forklift turning into aisle 4 with pedestrian present in path",
-                        "involved_entities": ["forklift_1", "worker_2"],
-                    },
-                    {
-                        "type": "unstable_stack",
-                        "severity": "warning",
-                        "location_bbox": [0.15, 0.20, 0.30, 0.55],
-                        "timestamp": "00:03",
-                        "description": "Pallet stack on rack B3 leaning left, risk of collapse",
-                        "involved_entities": ["rack_B3"],
-                    },
-                ],
-                "scene_summary": "Active warehouse floor with safety concerns: 1 PPE violation, 1 near-miss event, 1 unstable stack. Immediate attention required for forklift-pedestrian near-miss.",
-                "safety_score": 42,
-            },
-        },
-        "fleet": {
-            "reasoning": (
-                "I observe two forklifts and one pallet jack on the warehouse floor. "
-                "Forklift 1 is moving eastward through the main aisle at medium speed. "
-                "Forklift 2 is stationary at dock 3, currently loading a pallet. "
-                "The pallet jack is being operated manually heading south in aisle 7. "
-                "Forklift 1 passed within approximately 2 meters of a pedestrian at timestamp 00:12, "
-                "which constitutes a near-miss event given the speed of travel."
-            ),
-            "result": {
-                "vehicles": [
-                    {
-                        "id": "vehicle_1",
-                        "type": "forklift",
-                        "trajectory": [
-                            {"point_2d": [0.20, 0.50], "timestamp": "00:00", "label": "vehicle path"},
-                            {"point_2d": [0.35, 0.50], "timestamp": "00:05", "label": "vehicle path"},
-                            {"point_2d": [0.55, 0.48], "timestamp": "00:10", "label": "vehicle path"},
-                            {"point_2d": [0.70, 0.47], "timestamp": "00:15", "label": "vehicle path"},
-                        ],
-                        "speed_estimate": "medium",
-                        "near_misses": [
-                            {
-                                "timestamp": "00:12",
-                                "entity": "pedestrian",
-                                "distance_estimate": "close",
-                            }
-                        ],
-                        "zone_violations": [],
-                    },
-                    {
-                        "id": "vehicle_2",
-                        "type": "forklift",
-                        "trajectory": [
-                            {"point_2d": [0.80, 0.75], "timestamp": "00:00", "label": "stationary at dock"},
-                        ],
-                        "speed_estimate": "slow",
-                        "near_misses": [],
-                        "zone_violations": [],
-                    },
-                    {
-                        "id": "vehicle_3",
-                        "type": "pallet_jack",
-                        "trajectory": [
-                            {"point_2d": [0.60, 0.30], "timestamp": "00:00", "label": "vehicle path"},
-                            {"point_2d": [0.60, 0.50], "timestamp": "00:08", "label": "vehicle path"},
-                            {"point_2d": [0.60, 0.65], "timestamp": "00:15", "label": "vehicle path"},
-                        ],
-                        "speed_estimate": "slow",
-                        "near_misses": [],
-                        "zone_violations": [],
-                    },
-                ],
-            },
-        },
-        "product": {
-            "reasoning": (
-                "I can see a product package - it appears to be a box of Nature Valley Crunchy "
-                "Granola Bars, Oats 'n Honey flavor. The front shows the brand logo, product name, "
-                "and an image of the bars. I can read '12 bars / 6 pouches' on the front. "
-                "The nutrition facts panel is partially visible on the side. I can see the barcode "
-                "at the bottom and some certification logos including a whole grain stamp."
-            ),
-            "result": {
-                "product": {
-                    "name": "Crunchy Granola Bars",
-                    "brand": "Nature Valley",
-                    "variant": "Oats 'n Honey",
-                    "category": "Snacks",
-                    "subcategory": "Granola Bars",
-                    "size": "8.94 oz (253g) - 12 bars",
-                    "barcode": "016000275867",
-                    "expiry_date": "2026-08-15",
-                    "country_of_origin": "USA",
-                    "certifications": ["Whole Grain"],
-                    "visible_text": {
-                        "front": ["Nature Valley", "CRUNCHY", "Oats 'n Honey", "12 BARS / 6 POUCHES"],
-                        "back": [],
-                        "side": ["Nutrition Facts"],
-                    },
-                    "ingredients": [
-                        "Whole Grain Oats", "Sugar", "Canola Oil", "Yellow Corn Flour",
-                        "Honey", "Soy Flour", "Brown Sugar Syrup", "Salt",
-                        "Soy Lecithin", "Baking Soda", "Natural Flavor",
-                    ],
-                    "allergens": ["Soy"],
-                    "nutrition": {
-                        "serving_size": "2 bars (42g)",
-                        "calories": 190,
-                        "total_fat_g": 7,
-                        "saturated_fat_g": 1,
-                        "trans_fat_g": 0,
-                        "cholesterol_mg": 0,
-                        "sodium_mg": 180,
-                        "total_carb_g": 29,
-                        "dietary_fiber_g": 2,
-                        "sugars_g": 12,
-                        "protein_g": 4,
-                    },
-                    "warnings": ["Contains soy ingredients"],
-                },
-                "confidence": 0.87,
-            },
-        },
-        "inventory": {
-            "reasoning": (
-                "Examining the warehouse aisle view, I can see a standard racking system with "
-                "4 levels. Starting from the left: Bay A1 has full pallets on levels 1-3, but "
-                "level 4 is empty. Bay A2 shows signs of damage on the middle pallet - the "
-                "cardboard is crushed on the right side. Bay A3 has items stored on the floor "
-                "in front of the rack, partially blocking the aisle. I count approximately "
-                "24 visible rack positions, of which 19 are occupied, 3 are empty, and 2 have "
-                "anomalies requiring attention."
-            ),
-            "result": {
-                "anomalies": [
-                    {
-                        "type": "empty_slot",
-                        "severity": "info",
-                        "location_bbox": [0.05, 0.05, 0.20, 0.25],
-                        "aisle": "A",
-                        "bay": "1",
-                        "level": "4",
-                        "description": "Empty rack position at Bay A1, Level 4",
-                        "recommended_action": "Verify if intentional or restock needed",
-                    },
-                    {
-                        "type": "damaged_packaging",
-                        "severity": "warning",
-                        "location_bbox": [0.25, 0.35, 0.45, 0.55],
-                        "aisle": "A",
-                        "bay": "2",
-                        "level": "2",
-                        "description": "Crushed cardboard packaging on right side of pallet in Bay A2",
-                        "recommended_action": "Inspect product integrity and repackage if needed",
-                    },
-                    {
-                        "type": "floor_storage",
-                        "severity": "critical",
-                        "location_bbox": [0.50, 0.75, 0.70, 0.95],
-                        "aisle": "A",
-                        "bay": "3",
-                        "level": "floor",
-                        "description": "Items stored on floor in front of Bay A3, partially blocking aisle",
-                        "recommended_action": "Relocate items to proper rack positions immediately",
-                    },
-                ],
-                "total_positions_visible": 24,
-                "occupied_count": 19,
-                "empty_count": 3,
-                "anomaly_count": 2,
-                "aisle_condition": "partially_blocked",
-            },
-        },
-        "spatial": {
-            "reasoning": (
-                "Analyzing movement patterns across the warehouse floor, I can identify "
-                "a high-density clustering zone near the intersection of aisles 3 and 4, "
-                "where both foot traffic and forklift routes converge. This creates a "
-                "bottleneck especially during what appears to be a shift change or peak "
-                "picking period. The eastern section of the warehouse shows lower utilization, "
-                "suggesting potential for path redistribution. Workers are taking suboptimal "
-                "routes between picking stations, with an estimated 23% backtracking overhead."
-            ),
-            "result": {
-                "events": [
-                    {
-                        "start": "00:15",
-                        "end": "00:45",
-                        "caption": "Congestion buildup at aisle 3-4 intersection during peak activity",
-                        "zone_area_bbox": [0.35, 0.30, 0.55, 0.60],
-                        "severity": "high",
-                        "entity_count": 7,
-                    },
-                    {
-                        "start": "01:10",
-                        "end": "01:30",
-                        "caption": "Secondary congestion at dock staging area",
-                        "zone_area_bbox": [0.70, 0.65, 0.95, 0.90],
-                        "severity": "medium",
-                        "entity_count": 4,
-                    },
-                ],
-                "heatmap_zones": [
-                    {"area_bbox": [0.35, 0.30, 0.55, 0.60], "density": "high", "flow_direction": "mixed"},
-                    {"area_bbox": [0.70, 0.65, 0.95, 0.90], "density": "medium", "flow_direction": "east"},
-                    {"area_bbox": [0.05, 0.05, 0.30, 0.40], "density": "low", "flow_direction": "south"},
-                ],
-                "recommendations": [
-                    "Install one-way traffic markers at aisle 3-4 intersection",
-                    "Redirect outbound picking routes through eastern aisles to reduce congestion",
-                    "Consider staggering shift breaks to reduce peak density periods",
-                ],
-            },
-        },
-        "caption": {
-            "reasoning": (
-                "Reviewing the video footage chronologically: The scene begins with moderate "
-                "activity in a large warehouse space. At 00:15, a team of 4 workers begins "
-                "unloading pallets from dock 2. Around 00:45, a forklift transports a pallet "
-                "from receiving to aisle 5. Between 01:00-01:30, picking activity is concentrated "
-                "in aisles 2-4 with 3 workers using RF scanners. At 01:45, there is a brief "
-                "pause in activity suggesting a short break. Operations resume at 02:00 with "
-                "a focus on outbound staging near dock 4."
-            ),
-            "result": {
-                "shift_summary": "Moderate-to-high activity shift with focus on receiving and order picking. No major safety incidents. Dock utilization at approximately 50%. 6-8 workers active throughout the footage with standard operational tempo.",
-                "key_events": [
-                    {
-                        "start": "00:15",
-                        "end": "00:40",
-                        "caption": "Pallet unloading operation at dock 2 with 4-person team",
-                        "category": "operations",
-                        "severity": "routine",
-                    },
-                    {
-                        "start": "00:45",
-                        "end": "01:00",
-                        "caption": "Forklift transport from receiving to storage aisle 5",
-                        "category": "equipment",
-                        "severity": "routine",
-                    },
-                    {
-                        "start": "01:00",
-                        "end": "01:30",
-                        "caption": "Active order picking in aisles 2-4 with RF scanner usage",
-                        "category": "operations",
-                        "severity": "routine",
-                    },
-                    {
-                        "start": "01:45",
-                        "end": "02:00",
-                        "caption": "Brief activity pause - possible short break period",
-                        "category": "operations",
-                        "severity": "notable",
-                    },
-                ],
-                "metrics": {
-                    "estimated_worker_count": 8,
-                    "equipment_active": 2,
-                    "safety_events": 0,
-                    "operational_tempo": "medium",
-                },
-                "recommendations": [
-                    "Consider adding an additional forklift during receiving operations to speed up putaway",
-                    "Break periods could be staggered to maintain continuous throughput",
-                ],
-            },
-        },
-        "quality": {
-            "reasoning": (
-                "Inspecting the visible items, I can identify 4 packages in the image. "
-                "Package 1 (upper-left) has intact packaging with clear labeling - passes inspection. "
-                "Package 2 (upper-right) shows a visible dent on the top-right corner but seal is intact. "
-                "Package 3 (lower-left) has a torn shrink wrap and the label is partially obscured. "
-                "Package 4 (lower-right) appears to have water staining on the bottom third of the carton."
-            ),
-            "result": {
-                "inspections": [
-                    {
-                        "item_bbox": [0.05, 0.05, 0.45, 0.45],
-                        "status": "pass",
-                        "issues": [],
-                        "confidence": 0.94,
-                    },
-                    {
-                        "item_bbox": [0.55, 0.05, 0.95, 0.45],
-                        "status": "needs_review",
-                        "issues": [
-                            {
-                                "type": "damaged_packaging",
-                                "description": "Visible dent on top-right corner of carton",
-                                "severity": "accept_with_note",
-                            }
-                        ],
-                        "confidence": 0.88,
-                    },
-                    {
-                        "item_bbox": [0.05, 0.55, 0.45, 0.95],
-                        "status": "fail",
-                        "issues": [
-                            {
-                                "type": "damaged_packaging",
-                                "description": "Torn shrink wrap exposing product",
-                                "severity": "rework",
-                            },
-                            {
-                                "type": "label_issue",
-                                "description": "Label partially obscured, barcode may not scan",
-                                "severity": "rework",
-                            },
-                        ],
-                        "confidence": 0.91,
-                    },
-                    {
-                        "item_bbox": [0.55, 0.55, 0.95, 0.95],
-                        "status": "fail",
-                        "issues": [
-                            {
-                                "type": "appearance_anomaly",
-                                "description": "Water staining on bottom third of carton indicating moisture damage",
-                                "severity": "reject",
-                            }
-                        ],
-                        "confidence": 0.85,
-                    },
-                ],
-                "pass_rate": 0.25,
-                "total_inspected": 4,
-            },
-        },
-        "temporal": {
-            "reasoning": (
-                "Analyzing the video timeline for significant events. I observe the scene "
-                "transitions through several distinct phases of warehouse activity."
-            ),
-            "result": {
-                "events": [
-                    {"start": "00:00", "end": "00:20", "caption": "Workers preparing picking carts in staging area"},
-                    {"start": "00:20", "end": "00:50", "caption": "Forklift transporting pallets from dock to aisles"},
-                    {"start": "00:50", "end": "01:15", "caption": "Active order picking in aisles 1-3"},
-                    {"start": "01:15", "end": "01:30", "caption": "Pallet wrap station activity for outbound orders"},
-                ],
-            },
-        },
-        "weight": {
-            "reasoning": (
-                "Examining the items visible on the pallet, I can estimate weights based on "
-                "package sizes, typical product densities, and visible labeling."
-            ),
-            "result": {
-                "items": [
-                    {"description": "Standard pallet of boxed goods", "estimated_weight_lbs": 1800, "confidence": 0.7},
-                ],
-                "total_estimated_lbs": 1800,
-                "load_limit_status": "within_limits",
-            },
-        },
+    from app.config import settings
+
+    if not settings.nvidia_api_base:
+        raise ValueError(
+            "NVIDIA_API_BASE is required for Cosmos Reason 2 NIM inference."
+        )
+
+    # Use the deployed NIM model (2B on Brev L40S)
+    nim_model = "nvidia/cosmos-reason2-2b"
+
+    # Build messages in OpenAI-compatible format (same as local vLLM)
+    messages = build_messages(prompt, images=images, video_frames=video_frames)
+
+    category = TASK_CATEGORY.get(task, "reasoning")
+    params = SAMPLING_PARAMS[category]
+
+    payload = {
+        "model": nim_model,
+        "messages": messages,
+        "temperature": params["temperature"],
+        "top_p": params["top_p"],
+        "max_tokens": params["max_tokens"],
     }
 
-    response = demo_responses.get(task, demo_responses["caption"])
-    return {
-        "reasoning": response["reasoning"],
-        "result": response["result"],
-        "raw": f"<think>{response['reasoning']}</think>\n{json.dumps(response['result'], indent=2)}",
-        "model": model_name,
-    }
+    headers = {"Content-Type": "application/json"}
+    if settings.nvidia_api_key:
+        headers["Authorization"] = f"Bearer {settings.nvidia_api_key}"
+
+    import time as _time
+    _start = _time.time()
+
+    response = httpx.post(
+        f"{settings.nvidia_api_base}/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=120.0,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    raw_output = data["choices"][0]["message"]["content"]
+    usage = data.get("usage", {})
+    elapsed_ms = (_time.time() - _start) * 1000
+
+    # Record metrics
+    try:
+        from app.services.monitoring import MonitoringService
+        MonitoringService.get_instance().record_request(
+            task=task,
+            tokens_prompt=usage.get("prompt_tokens", 0),
+            tokens_completion=usage.get("completion_tokens", 0),
+            duration_ms=elapsed_ms,
+        )
+    except Exception:
+        pass
+
+    parsed = parse_response(raw_output)
+    parsed["model"] = f"Cosmos-Reason2-{model_size.value}"
+    return parsed
+
+

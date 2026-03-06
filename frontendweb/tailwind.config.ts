@@ -25,8 +25,9 @@ const config: Config = {
         "text-muted": "#71717a",
       },
       fontFamily: {
-        sans: ["DM Sans", "Inter", "sans-serif"],
-        display: ["Inter", "DM Sans", "sans-serif"],
+        sans: ["Inter", "system-ui", "sans-serif"],
+        display: ["Space Grotesk", "Inter", "sans-serif"],
+        mono: ["JetBrains Mono", "monospace"],
       },
       borderRadius: {
         card: "16px",

@@ -78,7 +78,7 @@ const Analytics: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-text-primary">Analytics</h1>
+        <h1 className="text-2xl font-bold text-text-primary font-display">Analytics</h1>
         <p className="text-sm text-text-muted mt-1">
           Operational insights and trend analysis
         </p>
@@ -128,9 +128,9 @@ const Analytics: React.FC = () => {
                 <div key={item.name} className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: item.color }} />
-                    <span className="text-sm text-text-secondary">{item.name}</span>
+                    <span className="text-sm text-text-primary font-medium">{item.name}</span>
                   </div>
-                  <span className="text-sm font-medium text-text-primary">{item.value}%</span>
+                  <span className="text-sm font-bold" style={{ color: item.color }}>{item.value}%</span>
                 </div>
               ))}
             </div>

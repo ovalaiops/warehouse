@@ -48,15 +48,22 @@ async def run_safety_detection(
         video_frames = None
 
         if is_video_file(filename):
-            video_frames = await extract_frames_from_upload(
-                file_content, filename, fps=2.0, max_frames=16
-            )
-            logger.info("Extracted %d frames from video for safety analysis", len(video_frames))
+            try:
+                video_frames = await extract_frames_from_upload(
+                    file_content, filename, fps=2.0, max_frames=16
+                )
+                logger.info("Extracted %d frames from video for safety analysis", len(video_frames))
+            except Exception as img_err:
+                logger.warning("Could not load video %s, falling through to demo mode: %s", filename, img_err)
         elif is_image_file(filename):
-            img = await load_image_from_upload(file_content, filename)
-            images = [img]
+            try:
+                img = await load_image_from_upload(file_content, filename)
+                images = [img]
+            except Exception as img_err:
+                logger.warning("Could not load image %s, falling through to demo mode: %s", filename, img_err)
         else:
-            return _error_response(f"Unsupported file type: {filename}")
+            # For unrecognized extensions, still try demo mode rather than erroring
+            logger.warning("Unrecognized file type %s, falling through to demo mode", filename)
 
         # Build prompt with context
         prompt = prompt_override or SAFETY_VIOLATION_PROMPT

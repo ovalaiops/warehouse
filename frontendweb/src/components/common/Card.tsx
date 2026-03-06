@@ -6,7 +6,7 @@ interface CardProps {
   className?: string;
   padding?: "none" | "sm" | "md" | "lg";
   header?: {
-    title: string;
+    title: React.ReactNode;
     action?: React.ReactNode;
   };
 }
@@ -33,7 +33,7 @@ export const Card: React.FC<CardProps> = ({
     >
       {header && (
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h3 className="text-sm font-semibold text-text-primary">
+          <h3 className="text-sm font-semibold text-text-primary font-display">
             {header.title}
           </h3>
           {header.action}

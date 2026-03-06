@@ -46,14 +46,21 @@ async def run_inventory_analysis(
         video_frames = None
 
         if is_video_file(filename):
-            video_frames = await extract_frames_from_upload(
-                file_content, filename, fps=1.0, max_frames=24
-            )
+            try:
+                video_frames = await extract_frames_from_upload(
+                    file_content, filename, fps=1.0, max_frames=24
+                )
+            except Exception as img_err:
+                logger.warning("Could not load video %s, falling through to demo mode: %s", filename, img_err)
         elif is_image_file(filename):
-            img = await load_image_from_upload(file_content, filename)
-            images = [img]
+            try:
+                img = await load_image_from_upload(file_content, filename)
+                images = [img]
+            except Exception as img_err:
+                logger.warning("Could not load image %s, falling through to demo mode: %s", filename, img_err)
         else:
-            return _error_response(f"Unsupported file type: {filename}")
+            # For unrecognized extensions, still try demo mode rather than erroring
+            logger.warning("Unrecognized file type %s, falling through to demo mode", filename)
 
         # Select prompt based on analysis type
         prompt_map = {

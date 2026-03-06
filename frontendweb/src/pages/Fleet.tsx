@@ -114,7 +114,7 @@ const Fleet: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-text-primary">Fleet Tracking</h1>
+        <h1 className="text-2xl font-bold text-text-primary font-display">Fleet Tracking</h1>
         <p className="text-sm text-text-muted mt-1">
           Real-time vehicle positions and trajectory analysis
         </p>

@@ -15,9 +15,18 @@
   body {
     background-color: var(--background);
     color: #ffffff;
-    font-family: "DM Sans", "Inter", sans-serif;
+    font-family: "Inter", system-ui, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    letter-spacing: -0.025em;
+  }
+
+  code, pre, .font-mono {
+    font-feature-settings: "liga" 1, "calt" 1;
   }
 
   /* Custom scrollbar for dark theme */

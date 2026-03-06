@@ -4,12 +4,15 @@ Connects all endpoints to their respective pipelines with timing,
 error handling, file upload processing, and batch inference support.
 """
 
+import asyncio
+import json
 import logging
 import time
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
+from fastapi.responses import StreamingResponse
 
 from app.api.schemas import (
     InferenceResponse,
@@ -31,12 +34,32 @@ from app.pipelines.product import run_product_recognition
 from app.pipelines.fleet import run_fleet_tracking
 from app.pipelines.caption import run_captioning
 from app.pipelines.spatial import run_spatial_analysis
+from app.pipelines.livefeed import stream_live_feed
 from app.models.reason2 import run_inference
 from app.prompts.caption import QUALITY_INSPECTION_PROMPT
+from app.services.image_gen import generate_scene_image, SCENE_PROMPTS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ------------------------------------------------------------------
+# Image generation endpoint (for demo)
+# ------------------------------------------------------------------
+
+@router.post("/generate/{scenario}")
+async def generate_demo_image(
+    scenario: str,
+    custom_prompt: Optional[str] = Form(None),
+):
+    """Generate a demo scene image for the given scenario using Gemini or synthetic fallback."""
+    valid = list(SCENE_PROMPTS.keys())
+    if scenario not in valid:
+        raise HTTPException(400, f"Invalid scenario '{scenario}'. Valid: {valid}")
+
+    result = await generate_scene_image(scenario, custom_prompt)
+    return result
 
 # In-memory batch job store (use Redis in production)
 _batch_jobs: dict[str, BatchJobResponse] = {}
@@ -417,6 +440,68 @@ async def infer_weight(
             detections=[],
             processing_time_ms=round(elapsed, 1),
         )
+
+
+# ------------------------------------------------------------------
+# Live Feed SSE endpoint
+# ------------------------------------------------------------------
+
+@router.get("/live-feed")
+async def live_feed_stream(
+    request: Request,
+    url: str,
+    prompt: str = "Describe what you see in this frame. Note any safety concerns, people, vehicles, or notable activities.",
+    interval: float = 3.0,
+    max_frames: int = 100,
+):
+    """Stream live feed inference results via Server-Sent Events (SSE).
+
+    Opens a video stream URL, captures frames at interval, runs Cosmos Reason 2
+    inference on each frame, and streams results back to the client.
+
+    Query params:
+        url: Video stream URL (YouTube Live, IP cam, HLS, RTSP)
+        prompt: The prompt to send with each frame
+        interval: Seconds between frame captures (default 3.0)
+        max_frames: Max frames to process (default 100)
+    """
+    if not url:
+        raise HTTPException(400, "url parameter is required")
+
+    interval = max(1.0, min(interval, 30.0))  # clamp between 1-30s
+    max_frames = max(1, min(max_frames, 200))
+
+    async def event_generator():
+        try:
+            async for event in stream_live_feed(
+                url=url,
+                prompt=prompt,
+                interval_seconds=interval,
+                max_frames=max_frames,
+            ):
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    logger.info("Live feed client disconnected")
+                    break
+
+                data = json.dumps(event, default=str)
+                yield f"data: {data}\n\n"
+
+        except asyncio.CancelledError:
+            logger.info("Live feed SSE cancelled")
+        except Exception as e:
+            logger.error("Live feed SSE error: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ------------------------------------------------------------------

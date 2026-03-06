@@ -32,7 +32,7 @@ const Warehouse: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-text-primary">Warehouse Map</h1>
+        <h1 className="text-2xl font-bold text-text-primary font-display">Warehouse Map</h1>
         <p className="text-sm text-text-muted mt-1">
           Interactive floor plan with real-time data overlays
         </p>

@@ -6,7 +6,8 @@ import { Card } from "@/components/common/Card";
 import { AlertFeed } from "@/components/dashboard/AlertFeed";
 import { CameraGrid } from "@/components/dashboard/CameraGrid";
 import { FleetMap } from "@/components/dashboard/FleetMap";
-import { AlertTriangle, ShieldCheck, Package, Truck } from "lucide-react";
+import { AlertTriangle, ShieldCheck, Package, Truck, Activity } from "lucide-react";
+import { GpuMonitorPanel } from "@/components/common/GpuMonitorPanel";
 import {
   Line,
   XAxis,
@@ -36,6 +37,7 @@ const analyticsData = [
 const WH_ID = "33333333-3333-3333-3333-333333333301";
 
 const Dashboard: React.FC = () => {
+  const [showGpuMonitor, setShowGpuMonitor] = React.useState(false);
   const { data: alerts } = useQuery({
     queryKey: ["dashboard-alerts"],
     queryFn: () => api.get<{ alerts: Array<{ id: string; status: string; severity: string }>; total: number }>(`/warehouses/${WH_ID}/alerts?limit=50`),
@@ -58,14 +60,30 @@ const Dashboard: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Page title */}
-      <div>
-        <h1 className="text-2xl font-bold text-text-primary">
-          Operations Dashboard
-        </h1>
-        <p className="text-sm text-text-muted mt-1">
-          Real-time warehouse monitoring and intelligence
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-text-primary font-display">
+            Operations Dashboard
+          </h1>
+          <p className="text-sm text-text-muted mt-1">
+            Real-time warehouse monitoring and intelligence
+          </p>
+        </div>
+        <button
+          onClick={() => setShowGpuMonitor(!showGpuMonitor)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-button text-xs font-medium border transition-colors ${
+            showGpuMonitor
+              ? "bg-accent/10 text-accent border-accent/30"
+              : "text-text-muted border-border hover:text-text-secondary"
+          }`}
+        >
+          <Activity className="w-3.5 h-3.5" />
+          GPU Monitor
+        </button>
       </div>
+
+      {/* GPU Monitoring Panel */}
+      {showGpuMonitor && <GpuMonitorPanel showConfig />}
 
       {/* Stat cards row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

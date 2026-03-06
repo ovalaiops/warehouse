@@ -135,7 +135,7 @@ const Reports: React.FC = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary">Reports</h1>
+          <h1 className="text-2xl font-bold text-text-primary font-display">Reports</h1>
           <p className="text-sm text-text-muted mt-1">
             Automated shift reports and operational summaries
           </p>
@@ -200,7 +200,7 @@ const Reports: React.FC = () => {
               <div className="space-y-5">
                 <div className="flex items-start justify-between">
                   <div>
-                    <h2 className="text-lg font-bold text-text-primary">
+                    <h2 className="text-lg font-bold text-text-primary font-display">
                       {selectedReport.title}
                     </h2>
                     <p className="text-xs text-text-muted mt-1">

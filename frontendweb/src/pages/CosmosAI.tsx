@@ -18,10 +18,24 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
-  FileImage,
   Clipboard,
+  Wand2,
+  ImagePlus,
+  History,
+  Trash2,
+  X,
+  ZoomIn,
+  Maximize2,
+  Activity,
+  Radio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  useInferenceHistoryStore,
+  createThumbnailDataUrl,
+} from "@/store/inferenceHistoryStore";
+import { GpuMonitorPanel } from "@/components/common/GpuMonitorPanel";
+import { LiveFeedPanel } from "@/components/cosmos/LiveFeedPanel";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,6 +48,7 @@ interface AnalysisMode {
   description: string;
   defaultPrompt: string;
   model: string;
+  demoHint: string;
 }
 
 interface BBox {
@@ -65,6 +80,7 @@ const MODES: AnalysisMode[] = [
     defaultPrompt:
       "Analyze this warehouse image for safety violations. Identify any workers without PPE, unsafe forklift operations, blocked exits, or spill hazards. Return bounding boxes for each violation.",
     model: "Cosmos-Reason2-8B",
+    demoHint: "Generates a warehouse scene with PPE violations, spills, and blocked exits",
   },
   {
     key: "inventory",
@@ -74,6 +90,7 @@ const MODES: AnalysisMode[] = [
     defaultPrompt:
       "Count all visible items on the shelves. Detect any empty positions or misplaced items. Return item counts and anomaly locations with bounding boxes.",
     model: "Cosmos-Reason2-8B",
+    demoHint: "Generates a pallet rack with empty slots, damaged boxes, and countable items",
   },
   {
     key: "product",
@@ -83,6 +100,7 @@ const MODES: AnalysisMode[] = [
     defaultPrompt:
       "Identify this product. Provide brand, name, category, and analyze visible ingredients. Flag any concerning additives.",
     model: "Cosmos-Reason2-2B",
+    demoHint: "Generates a product box with visible label, nutrition facts, and barcode",
   },
   {
     key: "fleet",
@@ -92,6 +110,7 @@ const MODES: AnalysisMode[] = [
     defaultPrompt:
       "Track all vehicles in this warehouse scene. Identify forklifts, AGVs, and pallet jacks. Provide bounding boxes and estimated trajectories.",
     model: "Cosmos-Reason2-8B",
+    demoHint: "Generates an overhead view with forklifts, AGV, and vehicle trajectories",
   },
   {
     key: "quality",
@@ -101,6 +120,7 @@ const MODES: AnalysisMode[] = [
     defaultPrompt:
       "Inspect this package/product for quality issues. Check seal integrity, label alignment, and packaging condition.",
     model: "Cosmos-Reason2-2B",
+    demoHint: "Generates a package with tears, crooked labels, and tape defects",
   },
   {
     key: "caption",
@@ -110,14 +130,8 @@ const MODES: AnalysisMode[] = [
     defaultPrompt:
       "Describe this warehouse scene in detail. Include information about activities, equipment, zones, and any notable observations.",
     model: "Cosmos-Reason2-2B",
+    demoHint: "Generates a busy warehouse with conveyors, forklifts, workers, and dock activity",
   },
-];
-
-const SAMPLE_IMAGES = [
-  { label: "Warehouse Floor", color: "#1a2e3a", mode: "safety" },
-  { label: "Shelf View", color: "#2a1e3a", mode: "inventory" },
-  { label: "Product Label", color: "#1a3a2e", mode: "product" },
-  { label: "Loading Dock", color: "#3a2e1a", mode: "fleet" },
 ];
 
 const BBOX_COLORS: Record<string, string> = {
@@ -157,30 +171,42 @@ async function runInference(
   return res.json();
 }
 
+/** Generate an AI test image via backend Gemini API. */
+async function generateDemoImage(scenario: string): Promise<{
+  image_base64: string;
+  source: string;
+  dataUrl: string;
+}> {
+  const formData = new FormData();
+  const res = await fetch(`/infer/generate/${scenario}`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`Image generation failed: ${res.status}`);
+  const data = await res.json();
+  if (!data.image_base64) throw new Error("No image returned from generator");
+  return {
+    image_base64: data.image_base64,
+    source: data.source === "gemini" ? "AI Generated" : "Synthetic",
+    dataUrl: `data:image/jpeg;base64,${data.image_base64}`,
+  };
+}
+
 async function checkModelHealth() {
   const res = await fetch("/models/health");
   if (!res.ok) return null;
   return res.json();
 }
 
-/** Create a tiny 1x1 PNG as a synthetic demo file */
-function createDemoFile(label: string): File {
-  const canvas = document.createElement("canvas");
-  canvas.width = 1;
-  canvas.height = 1;
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#17171d";
-  ctx.fillRect(0, 0, 1, 1);
-  const dataUrl = canvas.toDataURL("image/png");
-  const byteString = atob(dataUrl.split(",")[1]);
+/** Convert base64 JPEG to File object */
+function base64ToFile(b64: string, filename: string): File {
+  const byteString = atob(b64);
   const ab = new ArrayBuffer(byteString.length);
   const ia = new Uint8Array(ab);
   for (let i = 0; i < byteString.length; i++) {
     ia[i] = byteString.charCodeAt(i);
   }
-  return new File([ab], `${label.toLowerCase().replace(/\s/g, "_")}.png`, {
-    type: "image/png",
-  });
+  return new File([ab], filename, { type: "image/jpeg" });
 }
 
 // ---------------------------------------------------------------------------
@@ -188,19 +214,51 @@ function createDemoFile(label: string): File {
 // ---------------------------------------------------------------------------
 
 const CosmosAI: React.FC = () => {
+  const [topTab, setTopTab] = useState<"lab" | "livefeed">("lab");
   const [selectedMode, setSelectedMode] = useState<AnalysisMode>(MODES[0]);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [prompt, setPrompt] = useState(MODES[0].defaultPrompt);
   const [result, setResult] = useState<InferenceResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [processingTime, setProcessingTime] = useState<number | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [imageSource, setImageSource] = useState<string | null>(null);
+
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
+  const [historyFilter, setHistoryFilter] = useState<string | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [showMonitoring, setShowMonitoring] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageContainerRef = useRef<HTMLDivElement>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+
+  const { entries: historyEntries, addEntry, removeEntry, clearAll } = useInferenceHistoryStore();
+
+  const saveToHistory = async (
+    mode: AnalysisMode,
+    imgDataUrl: string,
+    source: string,
+    elapsed: number,
+    res: InferenceResult
+  ) => {
+    const thumbnail = await createThumbnailDataUrl(imgDataUrl);
+    addEntry({
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      mode: mode.key,
+      modeLabel: mode.label,
+      model: mode.model,
+      thumbnailDataUrl: thumbnail,
+      imageSource: source,
+      processingTimeMs: elapsed,
+      result: res as Record<string, unknown>,
+    });
+  };
 
   // Model health
   const { data: healthData } = useQuery({
@@ -212,7 +270,7 @@ const CosmosAI: React.FC = () => {
   // Revoke old object URLs
   useEffect(() => {
     return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      if (previewUrl && previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
 
@@ -223,12 +281,13 @@ const CosmosAI: React.FC = () => {
   };
 
   // File handling
-  const handleFile = useCallback((file: File) => {
+  const handleFile = useCallback((file: File, source?: string) => {
     setUploadedFile(file);
     setPreviewUrl(URL.createObjectURL(file));
     setResult(null);
     setError(null);
     setProcessingTime(null);
+    setImageSource(source || "upload");
   }, []);
 
   const handleDrop = useCallback(
@@ -236,7 +295,7 @@ const CosmosAI: React.FC = () => {
       e.preventDefault();
       setDragActive(false);
       const file = e.dataTransfer.files?.[0];
-      if (file && file.type.startsWith("image/")) handleFile(file);
+      if (file && file.type.startsWith("image/")) handleFile(file, "upload");
     },
     [handleFile]
   );
@@ -252,7 +311,7 @@ const CosmosAI: React.FC = () => {
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) handleFile(file);
+    if (file) handleFile(file, "upload");
   };
 
   // Clipboard paste
@@ -263,7 +322,7 @@ const CosmosAI: React.FC = () => {
       for (const item of Array.from(items)) {
         if (item.type.startsWith("image/")) {
           const file = item.getAsFile();
-          if (file) handleFile(file);
+          if (file) handleFile(file, "clipboard");
           break;
         }
       }
@@ -272,7 +331,44 @@ const CosmosAI: React.FC = () => {
     return () => document.removeEventListener("paste", onPaste);
   }, [handleFile]);
 
-  // Run analysis
+  // Generate demo image and auto-run inference
+  const handleGenerateDemo = async (mode: AnalysisMode) => {
+    handleModeChange(mode);
+    setGenerating(true);
+    setError(null);
+    setResult(null);
+    setProcessingTime(null);
+
+    try {
+      // Step 1: Generate image
+      const genResult = await generateDemoImage(mode.key);
+      const file = base64ToFile(genResult.image_base64, `${mode.key}_demo.jpg`);
+      setUploadedFile(file);
+      setPreviewUrl(genResult.dataUrl);
+      setImageSource(genResult.source);
+      setGenerating(false);
+
+      // Step 2: Auto-run inference on generated image
+      setLoading(true);
+      const start = performance.now();
+      const res = await runInference(mode.key, file, mode.defaultPrompt);
+      const elapsed = Math.round(performance.now() - start);
+      setProcessingTime(elapsed);
+      setResult(res);
+      if (res.think) setReasoningOpen(true);
+      setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+
+      // Save to history
+      saveToHistory(mode, genResult.dataUrl, genResult.source, elapsed, res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Demo generation failed");
+      setGenerating(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Run analysis on uploaded image
   const handleRunAnalysis = async () => {
     if (!uploadedFile) return;
     setLoading(true);
@@ -282,9 +378,16 @@ const CosmosAI: React.FC = () => {
     const start = performance.now();
     try {
       const res = await runInference(selectedMode.key, uploadedFile, prompt);
-      setProcessingTime(Math.round(performance.now() - start));
+      const elapsed = Math.round(performance.now() - start);
+      setProcessingTime(elapsed);
       setResult(res);
       if (res.think) setReasoningOpen(true);
+      setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+
+      // Save to history
+      if (previewUrl) {
+        saveToHistory(selectedMode, previewUrl, imageSource || "upload", elapsed, res);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
@@ -292,38 +395,18 @@ const CosmosAI: React.FC = () => {
     }
   };
 
-  // Sample images
-  const handleSample = (sample: (typeof SAMPLE_IMAGES)[number]) => {
-    const mode = MODES.find((m) => m.key === sample.mode) || MODES[0];
-    handleModeChange(mode);
-    const file = createDemoFile(sample.label);
-    handleFile(file);
-    // Auto-trigger after a tick so state settles
-    setTimeout(async () => {
-      setLoading(true);
-      setError(null);
-      setResult(null);
-      const start = performance.now();
-      try {
-        const res = await runInference(mode.key, file, mode.defaultPrompt);
-        setProcessingTime(Math.round(performance.now() - start));
-        setResult(res);
-        if (res.think) setReasoningOpen(true);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Analysis failed");
-      } finally {
-        setLoading(false);
-      }
-    }, 0);
-  };
-
-  // JSON syntax highlight (keys only)
+  // JSON syntax highlight with proper formatting
   const renderJson = (obj: unknown) => {
     const raw = JSON.stringify(obj, null, 2);
-    return raw.replace(
-      /"([^"]+)":/g,
-      '<span class="text-accent">"$1"</span>:'
-    );
+    // Highlight keys, strings, numbers, booleans
+    return raw
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"([^"]+)":/g, '<span class="text-accent">"$1"</span>:')
+      .replace(/: "([^"]*)"/g, ': <span class="text-yellow-400">"$1"</span>')
+      .replace(/: (\d+\.?\d*)/g, ': <span class="text-blue-400">$1</span>')
+      .replace(/: (true|false|null)/g, ': <span class="text-purple-400">$1</span>');
   };
 
   return (
@@ -331,7 +414,7 @@ const CosmosAI: React.FC = () => {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary flex items-center gap-3">
+          <h1 className="text-2xl font-bold text-text-primary flex items-center gap-3 font-display">
             <Brain className="w-7 h-7 text-accent" />
             Cosmos AI Lab
           </h1>
@@ -340,6 +423,18 @@ const CosmosAI: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowMonitoring(!showMonitoring)}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-button text-xs font-medium border transition-colors",
+              showMonitoring
+                ? "bg-accent/10 text-accent border-accent/30"
+                : "text-text-muted border-border hover:text-text-secondary"
+            )}
+          >
+            <Activity className="w-3.5 h-3.5" />
+            GPU Monitor
+          </button>
           {healthData ? (
             <Badge variant="success" dot>
               Models Online
@@ -351,6 +446,43 @@ const CosmosAI: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* GPU Monitoring Panel */}
+      {showMonitoring && <GpuMonitorPanel />}
+
+      {/* Top-level tab: Analysis Lab vs Live Feed */}
+      <div className="flex gap-1 p-1 bg-surface-elevated rounded-button border border-border">
+        <button
+          onClick={() => setTopTab("lab")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-button text-sm font-medium transition-all flex-1 justify-center",
+            topTab === "lab"
+              ? "bg-accent/10 text-accent border border-accent/30"
+              : "text-text-secondary hover:text-text-primary border border-transparent"
+          )}
+        >
+          <Brain className="w-4 h-4" />
+          Analysis Lab
+        </button>
+        <button
+          onClick={() => setTopTab("livefeed")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-button text-sm font-medium transition-all flex-1 justify-center",
+            topTab === "livefeed"
+              ? "bg-accent/10 text-accent border border-accent/30"
+              : "text-text-secondary hover:text-text-primary border border-transparent"
+          )}
+        >
+          <Radio className="w-4 h-4" />
+          Live Feed
+        </button>
+      </div>
+
+      {/* Live Feed Tab */}
+      {topTab === "livefeed" && <LiveFeedPanel />}
+
+      {/* Analysis Lab Tab */}
+      {topTab === "lab" && (<>
 
       {/* Mode Selector */}
       <Card padding="sm">
@@ -380,175 +512,255 @@ const CosmosAI: React.FC = () => {
         </p>
       </Card>
 
+      {/* Dual Path Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Left column: Upload + Prompt + Run */}
-        <div className="space-y-4">
-          {/* Upload Zone */}
-          <Card header={{ title: "Image Input" }} padding="sm">
-            <div
-              ref={imageContainerRef}
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onClick={() => fileInputRef.current?.click()}
-              className={cn(
-                "relative flex flex-col items-center justify-center rounded-button border-2 border-dashed cursor-pointer transition-all duration-200 min-h-[280px] overflow-hidden",
-                dragActive
-                  ? "border-accent/60 bg-accent/5"
-                  : "border-border hover:border-accent/40"
-              )}
-            >
-              {previewUrl ? (
-                <div className="relative w-full h-full min-h-[280px]">
-                  <img
-                    src={previewUrl}
-                    alt="Uploaded"
-                    className="w-full h-full object-contain max-h-[400px]"
-                  />
-                  {/* Bounding box overlay */}
-                  {result?.detections &&
-                    result.detections.map((det, i) => (
-                      <div
-                        key={i}
-                        className="absolute border-2 rounded-sm pointer-events-none"
-                        style={{
-                          left: `${det.x}%`,
-                          top: `${det.y}%`,
-                          width: `${det.w}%`,
-                          height: `${det.h}%`,
-                          borderColor: getBBoxColor(det.label),
-                        }}
-                      >
-                        <span
-                          className="absolute -top-5 left-0 text-[10px] px-1 py-0.5 rounded font-mono whitespace-nowrap"
-                          style={{
-                            backgroundColor: getBBoxColor(det.label),
-                            color: "#08070e",
-                          }}
-                        >
-                          {det.label} {Math.round(det.confidence * 100)}%
-                        </span>
-                      </div>
-                    ))}
-                </div>
-              ) : (
-                <div className="flex flex-col items-center gap-3 py-8">
-                  <div className="w-16 h-16 rounded-card bg-surface-elevated flex items-center justify-center">
-                    <Camera className="w-8 h-8 text-text-muted" />
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm text-text-secondary font-medium">
-                      Drop an image here or click to browse
-                    </p>
-                    <p className="text-xs text-text-muted mt-1">
-                      Supports PNG, JPG, WebP. You can also paste from
-                      clipboard.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 text-text-muted">
-                    <Upload className="w-4 h-4" />
-                    <span className="text-xs">
-                      or press{" "}
-                      <kbd className="px-1.5 py-0.5 bg-surface-elevated rounded text-[10px] border border-border">
-                        Ctrl+V
-                      </kbd>{" "}
-                      to paste
-                    </span>
-                    <Clipboard className="w-3.5 h-3.5" />
-                  </div>
-                </div>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleFileInput}
-              />
-            </div>
-          </Card>
-
-          {/* Prompt */}
-          <Card header={{ title: "Prompt Configuration" }} padding="sm">
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={4}
-              className="w-full bg-background border border-border rounded-button px-3 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none font-sans"
-              placeholder="Describe what you want the model to analyze..."
-            />
-            <div className="flex items-center justify-between mt-3">
-              <span className="text-xs text-text-muted">
-                Model: {selectedMode.model}
-              </span>
-              <Button
-                onClick={handleRunAnalysis}
-                loading={loading}
-                disabled={!uploadedFile}
-                size="md"
-              >
-                <Play className="w-4 h-4" />
-                Run Analysis
-              </Button>
-            </div>
-          </Card>
-
-          {/* Sample Images */}
-          <Card header={{ title: "Quick Start Samples" }} padding="sm">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {SAMPLE_IMAGES.map((sample) => (
+        {/* PATH 1: Generate AI Test Image */}
+        <Card
+          header={{
+            title: "Generate AI Test Image",
+            action: (
+              <Badge variant="info">
+                <Wand2 className="w-3 h-3 mr-1" />
+                Gemini AI
+              </Badge>
+            ),
+          }}
+          padding="sm"
+        >
+          <p className="text-xs text-text-muted mb-3">
+            Generate a realistic AI image using Gemini, then auto-analyze with Cosmos Reason 2. Pick a scenario to test.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {MODES.map((mode) => {
+              const Icon = mode.icon;
+              const isActive = selectedMode.key === mode.key;
+              return (
                 <button
-                  key={sample.label}
-                  onClick={() => handleSample(sample)}
-                  className="flex flex-col items-center gap-2 p-3 rounded-button border border-border hover:border-accent/30 hover:bg-surface-elevated transition-all duration-200 group"
+                  key={mode.key}
+                  onClick={() => handleGenerateDemo(mode)}
+                  disabled={generating || loading}
+                  className={cn(
+                    "flex flex-col items-center gap-2 p-3 rounded-button border transition-all duration-200 group text-left",
+                    isActive
+                      ? "border-accent/30 bg-accent/5"
+                      : "border-border hover:border-accent/20 hover:bg-surface-elevated",
+                    (generating || loading) && "opacity-50 cursor-not-allowed"
+                  )}
                 >
-                  <div
-                    className="w-full aspect-video rounded-badge flex items-center justify-center"
-                    style={{ backgroundColor: sample.color }}
-                  >
-                    <FileImage className="w-6 h-6 text-text-muted group-hover:text-accent transition-colors" />
+                  <div className="w-10 h-10 rounded-card bg-surface-elevated flex items-center justify-center group-hover:bg-accent/10 transition-colors">
+                    <Icon className="w-5 h-5 text-text-muted group-hover:text-accent transition-colors" />
                   </div>
-                  <span className="text-xs text-text-secondary group-hover:text-text-primary transition-colors">
-                    {sample.label}
+                  <span className="text-xs font-medium text-text-secondary group-hover:text-text-primary text-center leading-tight">
+                    {mode.label}
+                  </span>
+                  <span className="text-[10px] text-text-muted text-center leading-tight">
+                    {mode.demoHint.split(",")[0]}
                   </span>
                 </button>
-              ))}
+              );
+            })}
+          </div>
+          {generating && (
+            <div className="flex items-center gap-2 mt-3 px-3 py-2 bg-accent/5 border border-accent/20 rounded-button">
+              <Loader2 className="w-4 h-4 text-accent animate-spin" />
+              <span className="text-xs text-accent font-medium">
+                Generating AI test image for {selectedMode.label}...
+              </span>
             </div>
-          </Card>
-        </div>
-
-        {/* Right column: Results */}
-        <div className="space-y-4">
-          {/* Error */}
-          {error && (
-            <Card padding="sm">
-              <div className="flex items-center gap-2 text-critical">
-                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                <span className="text-sm">{error}</span>
-              </div>
-            </Card>
           )}
+        </Card>
 
-          {/* Loading state */}
-          {loading && (
-            <Card padding="md">
-              <div className="flex flex-col items-center justify-center py-12 gap-4">
-                <Loader2 className="w-8 h-8 text-accent animate-spin" />
+        {/* PATH 2: Real Upload */}
+        <Card
+          header={{
+            title: "Real Upload",
+            action: (
+              <Badge variant="success">
+                <ImagePlus className="w-3 h-3 mr-1" />
+                Your Image
+              </Badge>
+            ),
+          }}
+          padding="sm"
+        >
+          <p className="text-xs text-text-muted mb-3">
+            Upload a real warehouse image or paste from clipboard for authentic analysis.
+          </p>
+          <div
+            ref={imageContainerRef}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onClick={() => fileInputRef.current?.click()}
+            className={cn(
+              "relative flex flex-col items-center justify-center rounded-button border-2 border-dashed cursor-pointer transition-all duration-200 min-h-[200px] overflow-hidden",
+              dragActive
+                ? "border-accent/60 bg-accent/5"
+                : "border-border hover:border-accent/40"
+            )}
+          >
+            {previewUrl ? (
+              <div className="relative w-full h-full min-h-[200px] group">
+                <img
+                  src={previewUrl}
+                  alt="Uploaded"
+                  className="w-full h-full object-contain max-h-[300px]"
+                />
+                {imageSource && (
+                  <div className="absolute top-2 left-2">
+                    <Badge variant={imageSource.includes("AI") || imageSource.includes("Synthetic") ? "info" : "success"}>
+                      {imageSource}
+                    </Badge>
+                  </div>
+                )}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setLightboxUrl(previewUrl); }}
+                  className="absolute top-2 right-2 p-1.5 rounded-button bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
+                  title="View full size"
+                >
+                  <Maximize2 className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-3 py-6">
+                <div className="w-14 h-14 rounded-card bg-surface-elevated flex items-center justify-center">
+                  <Camera className="w-7 h-7 text-text-muted" />
+                </div>
                 <div className="text-center">
-                  <p className="text-sm text-text-primary font-medium">
-                    Running {selectedMode.label}...
+                  <p className="text-sm text-text-secondary font-medium">
+                    Drop image or click to browse
                   </p>
                   <p className="text-xs text-text-muted mt-1">
-                    Using {selectedMode.model}
+                    PNG, JPG, WebP
                   </p>
                 </div>
+                <div className="flex items-center gap-2 text-text-muted">
+                  <Upload className="w-3.5 h-3.5" />
+                  <span className="text-[10px]">
+                    or{" "}
+                    <kbd className="px-1 py-0.5 bg-surface-elevated rounded text-[9px] border border-border">
+                      Ctrl+V
+                    </kbd>{" "}
+                    to paste
+                  </span>
+                  <Clipboard className="w-3 h-3" />
+                </div>
               </div>
-            </Card>
-          )}
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleFileInput}
+            />
+          </div>
+        </Card>
+      </div>
 
-          {/* Results */}
-          {result && !loading && (
-            <>
+      {/* Prompt + Run (shared) */}
+      {uploadedFile && (
+        <Card header={{ title: "Prompt Configuration" }} padding="sm">
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={3}
+            className="w-full bg-background border border-border rounded-button px-3 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none font-sans"
+            placeholder="Describe what you want the model to analyze..."
+          />
+          <div className="flex items-center justify-between mt-3">
+            <span className="text-xs text-text-muted">
+              Model: {selectedMode.model}
+            </span>
+            <Button
+              onClick={handleRunAnalysis}
+              loading={loading}
+              disabled={!uploadedFile || generating}
+              size="md"
+            >
+              <Play className="w-4 h-4" />
+              Run Analysis
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Image Preview with BBox overlay (full width when results exist) */}
+      {previewUrl && result?.detections && result.detections.length > 0 && (
+        <Card header={{ title: "Detection Overlay" }} padding="sm">
+          <div
+            className="relative w-full max-h-[500px] overflow-hidden rounded-button group cursor-zoom-in"
+            onClick={() => setLightboxUrl(previewUrl)}
+          >
+            <img
+              src={previewUrl}
+              alt="Analysis"
+              className="w-full h-auto object-contain max-h-[500px]"
+            />
+            <div className="absolute top-2 right-2 p-1.5 rounded-button bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity">
+              <ZoomIn className="w-4 h-4" />
+            </div>
+            {result.detections.map((det, i) => (
+              <div
+                key={i}
+                className="absolute border-2 rounded-sm pointer-events-none"
+                style={{
+                  left: `${det.x}%`,
+                  top: `${det.y}%`,
+                  width: `${det.w}%`,
+                  height: `${det.h}%`,
+                  borderColor: getBBoxColor(det.label),
+                }}
+              >
+                <span
+                  className="absolute -top-5 left-0 text-[10px] px-1 py-0.5 rounded font-mono whitespace-nowrap"
+                  style={{
+                    backgroundColor: getBBoxColor(det.label),
+                    color: "#08070e",
+                  }}
+                >
+                  {det.label} {Math.round(det.confidence * 100)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Results Section */}
+      <div ref={resultsRef} className="space-y-4">
+        {/* Error */}
+        {error && (
+          <Card padding="sm">
+            <div className="flex items-center gap-2 text-critical">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+              <span className="text-sm">{error}</span>
+            </div>
+          </Card>
+        )}
+
+        {/* Loading state */}
+        {loading && (
+          <Card padding="md">
+            <div className="flex flex-col items-center justify-center py-12 gap-4">
+              <Loader2 className="w-8 h-8 text-accent animate-spin" />
+              <div className="text-center">
+                <p className="text-sm text-text-primary font-medium">
+                  Running {selectedMode.label}...
+                </p>
+                <p className="text-xs text-text-muted mt-1">
+                  Using {selectedMode.model}
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {/* Results */}
+        {result && !loading && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Left: Structured Results */}
+            <div className="space-y-4">
               {/* Reasoning Chain */}
               {result.think && (
                 <Card padding="none">
@@ -576,7 +788,7 @@ const CosmosAI: React.FC = () => {
                 </Card>
               )}
 
-              {/* Structured Results */}
+              {/* Mode-specific results */}
               <Card
                 header={{
                   title: "Analysis Results",
@@ -588,7 +800,7 @@ const CosmosAI: React.FC = () => {
                 }}
                 padding="sm"
               >
-                {/* Mode-specific summary */}
+                {/* Safety violations */}
                 {selectedMode.key === "safety" && result.violations && (
                   <div className="space-y-2 mb-3">
                     <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
@@ -605,9 +817,7 @@ const CosmosAI: React.FC = () => {
                             {v.type}
                           </span>
                           <Badge
-                            variant={
-                              v.severity === "high" ? "critical" : "warning"
-                            }
+                            variant={v.severity === "high" ? "critical" : "warning"}
                           >
                             {v.severity}
                           </Badge>
@@ -617,6 +827,23 @@ const CosmosAI: React.FC = () => {
                   </div>
                 )}
 
+                {/* Safety score */}
+                {selectedMode.key === "safety" && result.safety_score != null && (
+                  <div className="flex items-center gap-3 mb-3 p-3 bg-surface-elevated rounded-button border border-border">
+                    <div className="text-center">
+                      <p className={cn(
+                        "text-2xl font-bold",
+                        result.safety_score >= 80 ? "text-accent" :
+                        result.safety_score >= 50 ? "text-warning" : "text-critical"
+                      )}>
+                        {result.safety_score}
+                      </p>
+                      <p className="text-xs text-text-muted">Safety Score</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Product info */}
                 {selectedMode.key === "product" && result.product && (
                   <div className="space-y-2 mb-3 p-3 bg-surface-elevated rounded-button border border-border">
                     <p className="text-sm font-semibold text-text-primary">
@@ -640,6 +867,7 @@ const CosmosAI: React.FC = () => {
                   </div>
                 )}
 
+                {/* Inventory counts */}
                 {selectedMode.key === "inventory" && result.counts && (
                   <div className="grid grid-cols-3 gap-2 mb-3">
                     {Object.entries(
@@ -658,6 +886,7 @@ const CosmosAI: React.FC = () => {
                   </div>
                 )}
 
+                {/* Fleet vehicles */}
                 {selectedMode.key === "fleet" && result.vehicles && (
                   <div className="space-y-2 mb-3">
                     {(result.vehicles as Array<{ type: string; position?: string }>).map(
@@ -681,6 +910,7 @@ const CosmosAI: React.FC = () => {
                   </div>
                 )}
 
+                {/* Quality score */}
                 {selectedMode.key === "quality" && result.score != null && (
                   <div className="flex items-center gap-4 mb-3 p-3 bg-surface-elevated rounded-button border border-border">
                     <div className="text-center">
@@ -705,21 +935,49 @@ const CosmosAI: React.FC = () => {
                   </div>
                 )}
 
-                {/* Full JSON response */}
-                <div className="mt-2">
-                  <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
-                    Raw Response
-                  </p>
-                  <div
-                    className="bg-background rounded-button p-3 font-mono text-xs text-text-secondary max-h-72 overflow-auto border border-border"
-                    dangerouslySetInnerHTML={{ __html: renderJson(result) }}
-                  />
-                </div>
+                {/* Caption / scene summary */}
+                {selectedMode.key === "caption" && result.caption && (
+                  <div className="p-3 bg-surface-elevated rounded-button border border-border mb-3">
+                    <p className="text-sm text-text-primary leading-relaxed">
+                      {result.caption as string}
+                    </p>
+                  </div>
+                )}
+
+                {/* Detections list */}
+                {result.detections && result.detections.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">
+                      Detections ({result.detections.length})
+                    </p>
+                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                      {result.detections.map((det, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center justify-between px-2 py-1.5 bg-surface-elevated rounded-badge border border-border"
+                        >
+                          <div className="flex items-center gap-2">
+                            <div
+                              className="w-2.5 h-2.5 rounded-full"
+                              style={{ backgroundColor: getBBoxColor(det.label) }}
+                            />
+                            <span className="text-xs font-medium text-text-primary capitalize">
+                              {det.label.replace(/_/g, " ")}
+                            </span>
+                          </div>
+                          <span className="text-xs text-text-muted font-mono">
+                            {Math.round(det.confidence * 100)}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </Card>
 
               {/* Metadata */}
               <Card padding="sm">
-                <div className="flex items-center gap-4 text-xs text-text-muted">
+                <div className="flex items-center gap-4 text-xs text-text-muted flex-wrap">
                   <span>
                     Model:{" "}
                     <span className="text-text-primary font-medium">
@@ -734,36 +992,226 @@ const CosmosAI: React.FC = () => {
                       </span>
                     </span>
                   )}
+                  {imageSource && (
+                    <span>
+                      Source:{" "}
+                      <span className="text-text-primary font-medium">
+                        {imageSource}
+                      </span>
+                    </span>
+                  )}
                   <span>
                     Status:{" "}
                     <span className="text-accent font-medium">Complete</span>
                   </span>
                 </div>
               </Card>
-            </>
-          )}
+            </div>
 
-          {/* Empty state */}
-          {!result && !loading && !error && (
-            <Card padding="lg">
-              <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
-                <div className="w-16 h-16 rounded-card bg-accent/5 flex items-center justify-center">
-                  <Brain className="w-8 h-8 text-accent/40" />
-                </div>
-                <div>
-                  <p className="text-sm text-text-secondary font-medium">
-                    Upload an image and run analysis
-                  </p>
-                  <p className="text-xs text-text-muted mt-1">
-                    Results will appear here with detections, reasoning, and
-                    structured data
-                  </p>
-                </div>
-              </div>
+            {/* Right: Raw JSON */}
+            <Card
+              header={{
+                title: "Raw Response",
+                action: (
+                  <Badge variant="info">JSON</Badge>
+                ),
+              }}
+              padding="sm"
+            >
+              <pre
+                className="bg-background rounded-button p-4 font-mono text-[11px] leading-relaxed text-text-secondary max-h-[600px] overflow-auto border border-border whitespace-pre-wrap break-words"
+                dangerouslySetInnerHTML={{ __html: renderJson(result) }}
+              />
             </Card>
-          )}
-        </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!result && !loading && !error && !generating && (
+          <Card padding="lg">
+            <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
+              <div className="w-16 h-16 rounded-card bg-accent/5 flex items-center justify-center">
+                <Brain className="w-8 h-8 text-accent/40" />
+              </div>
+              <div>
+                <p className="text-sm text-text-secondary font-medium">
+                  Choose a demo scenario or upload your own image
+                </p>
+                <p className="text-xs text-text-muted mt-1">
+                  Use <strong>Simulated Demo</strong> to generate a test scene, or <strong>Real Upload</strong> for your own data
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
       </div>
+
+      {/* Inference History */}
+      {historyEntries.length > 0 && (
+        <Card
+          header={{
+            title: (
+              <span className="flex items-center gap-2">
+                <History className="w-4 h-4 text-accent" />
+                Inference History
+                <Badge variant="info">{historyEntries.length}</Badge>
+              </span>
+            ),
+            action: (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  if (confirm("Clear all inference history?")) clearAll();
+                }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Clear
+              </Button>
+            ),
+          }}
+          padding="sm"
+        >
+          {/* Filter tabs */}
+          <div className="flex gap-1.5 mb-3 overflow-x-auto pb-1">
+            <button
+              onClick={() => setHistoryFilter(null)}
+              className={cn(
+                "px-3 py-1 rounded-button text-xs font-medium transition-colors border",
+                historyFilter === null
+                  ? "bg-accent/10 text-accent border-accent/30"
+                  : "text-text-muted border-transparent hover:text-text-secondary"
+              )}
+            >
+              All
+            </button>
+            {Array.from(new Set(historyEntries.map((e) => e.mode))).map((mode) => {
+              const modeInfo = MODES.find((m) => m.key === mode);
+              const Icon = modeInfo?.icon || Brain;
+              return (
+                <button
+                  key={mode}
+                  onClick={() => setHistoryFilter(mode)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1 rounded-button text-xs font-medium transition-colors border whitespace-nowrap",
+                    historyFilter === mode
+                      ? "bg-accent/10 text-accent border-accent/30"
+                      : "text-text-muted border-transparent hover:text-text-secondary"
+                  )}
+                >
+                  <Icon className="w-3 h-3" />
+                  {modeInfo?.label || mode}
+                  <span className="text-[10px] opacity-60">
+                    ({historyEntries.filter((e) => e.mode === mode).length})
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* History entries */}
+          <div className="space-y-2 max-h-[600px] overflow-y-auto">
+            {historyEntries
+              .filter((e) => !historyFilter || e.mode === historyFilter)
+              .map((entry) => {
+                const isExpanded = expandedHistoryId === entry.id;
+                const ModeIcon = MODES.find((m) => m.key === entry.mode)?.icon || Brain;
+                return (
+                  <div
+                    key={entry.id}
+                    className="border border-border rounded-button overflow-hidden bg-surface"
+                  >
+                    {/* Collapsed row */}
+                    <button
+                      onClick={() => setExpandedHistoryId(isExpanded ? null : entry.id)}
+                      className="flex items-center gap-3 w-full px-3 py-2.5 text-left hover:bg-surface-elevated/50 transition-colors"
+                    >
+                      {/* Thumbnail */}
+                      <img
+                        src={entry.thumbnailDataUrl}
+                        alt=""
+                        className="w-12 h-12 rounded object-cover flex-shrink-0 border border-border hover:ring-2 hover:ring-accent/40 transition-all cursor-zoom-in"
+                        onClick={(e) => { e.stopPropagation(); setLightboxUrl(entry.thumbnailDataUrl); }}
+                        title="Click to enlarge"
+                      />
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <ModeIcon className="w-3.5 h-3.5 text-accent flex-shrink-0" />
+                          <span className="text-sm font-medium text-text-primary truncate">
+                            {entry.modeLabel}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 mt-0.5 text-[11px] text-text-muted">
+                          <span>{new Date(entry.timestamp).toLocaleString()}</span>
+                          <span>{entry.processingTimeMs}ms</span>
+                          <span>{entry.model}</span>
+                          <Badge variant="info" className="text-[9px] px-1 py-0">
+                            {entry.imageSource}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      {/* Expand/collapse */}
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeEntry(entry.id);
+                          }}
+                          className="p-1 rounded hover:bg-critical/10 text-text-muted hover:text-critical transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                        {isExpanded ? (
+                          <ChevronDown className="w-4 h-4 text-text-muted" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 text-text-muted" />
+                        )}
+                      </div>
+                    </button>
+
+                    {/* Expanded detail */}
+                    {isExpanded && (
+                      <div className="border-t border-border px-3 py-3 bg-background">
+                        <pre
+                          className="bg-surface-elevated rounded-button p-3 font-mono text-[11px] leading-relaxed text-text-secondary max-h-[400px] overflow-auto border border-border whitespace-pre-wrap break-words"
+                          dangerouslySetInnerHTML={{
+                            __html: renderJson(entry.result),
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+        </Card>
+      )}
+
+      </>)}
+
+      {/* Lightbox */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm cursor-zoom-out"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <button
+            onClick={() => setLightboxUrl(null)}
+            className="absolute top-4 right-4 p-2 rounded-button bg-white/10 text-white hover:bg-white/20 transition-colors z-10"
+          >
+            <X className="w-6 h-6" />
+          </button>
+          <img
+            src={lightboxUrl}
+            alt="Full size"
+            className="max-w-[95vw] max-h-[95vh] object-contain rounded-card shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   );
 };

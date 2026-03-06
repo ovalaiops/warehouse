@@ -13,7 +13,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in ("true", "1", "yes")
+USE_NIM_API = os.getenv("USE_NIM_API", "false").lower() in ("true", "1", "yes")
 
 
 class ModelSize(str, Enum):
@@ -43,7 +43,7 @@ class ModelManager:
     def __init__(self):
         self._models: dict[ModelSize, object] = {}
         self._loading: dict[ModelSize, bool] = {}
-        self._demo_mode = DEMO_MODE
+        self._use_nim = USE_NIM_API
         self._gpu_available: Optional[bool] = None
 
     @classmethod
@@ -54,11 +54,15 @@ class ModelManager:
 
     @property
     def demo_mode(self) -> bool:
-        if self._demo_mode:
+        if self._use_nim:
             return True
         if self._gpu_available is None:
             self._gpu_available = self._check_gpu()
         return not self._gpu_available
+
+    @property
+    def using_nim(self) -> bool:
+        return self._use_nim
 
     def _check_gpu(self) -> bool:
         """Check if CUDA GPU is available."""
@@ -86,7 +90,10 @@ class ModelManager:
     def load_model(self, size: ModelSize) -> object:
         """Load a model by size. Returns the vLLM LLM instance."""
         if self.demo_mode:
-            logger.info("Demo mode active - skipping model load for %s", size.value)
+            if self._use_nim:
+                logger.info("Using NVIDIA NIM API for %s - skipping local model load", size.value)
+            else:
+                logger.info("No GPU available for %s - will use NIM API", size.value)
             return None
 
         if size in self._models:
@@ -139,8 +146,10 @@ class ModelManager:
         statuses = []
         for size in ModelSize:
             path = self._model_path(size)
-            if self.demo_mode:
-                status = "demo_mode"
+            if self._use_nim:
+                status = "nim_api"
+            elif self.demo_mode:
+                status = "no_gpu"
             elif size in self._models:
                 status = "loaded"
             elif self._loading.get(size):

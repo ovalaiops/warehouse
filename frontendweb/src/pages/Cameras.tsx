@@ -34,7 +34,7 @@ const Cameras: React.FC = () => {
             <ArrowLeft className="w-4 h-4" />
             Back to Grid
           </Button>
-          <h1 className="text-xl font-bold text-text-primary">
+          <h1 className="text-xl font-bold text-text-primary font-display">
             {details.name}
           </h1>
         </div>
@@ -52,7 +52,7 @@ const Cameras: React.FC = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary">Cameras</h1>
+          <h1 className="text-2xl font-bold text-text-primary font-display">Cameras</h1>
           <p className="text-sm text-text-muted mt-1">
             6 cameras configured, 5 active
           </p>
